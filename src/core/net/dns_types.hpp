@@ -1307,7 +1307,19 @@ public:
     void SetClass(uint16_t aClass) { mClass = HostSwap16(aClass); }
 
     /**
-     * Returns the time to live field of the resource record.
+     * This method sets the most significant bit of the resource record class field.
+     * As per RFC 6762, section 10.2, the cache-flush bit is NOT part of the resource record
+     * class. The cache-flush bit is the most significant bit of the second
+     * 16-bit word of a resource record in a Resource Record Section of a
+     * Multicast DNS message (the field conventionally referred to as the
+     * rrclass field), and the actual resource record class is the least
+     * significant fifteen bits of this field
+     */
+
+    void SetCacheFlushBit() { mClass |= HostSwap16(kCacheFlushBitFlag); }
+
+    /**
+     * This method returns the time to live field of the resource record.
      *
      * @returns The time to live field of the resource record.
      *
@@ -1479,6 +1491,7 @@ protected:
 
 private:
     static constexpr uint16_t kType = kTypeAny; // This is intended for used by `ReadRecord<RecordType>()` only.
+    static constexpr uint16_t kCacheFlushBitFlag = 0x8000; // This is intended for mDns Announcing feature.
 
     static Error FindRecord(const Message  &aMessage,
                             uint16_t       &aOffset,
@@ -2636,7 +2649,24 @@ public:
      */
     void SetClass(uint16_t aClass) { mClass = HostSwap16(aClass); }
 
+    /**
+     * This method returns true if the class of the question contains the QU bit.
+     *
+     * @returns TRUE if the QU bit in the class field is set.
+     *
+     */
+    bool IsQuQuestion() { return mClass & kQuQuestionFlag; }
+
+    /**
+     * This method sets QU bit in the class  field of the question.
+     *
+     */
+    void SetQuQuestion() { mClass = mClass | kQuQuestionFlag; }
+
 private:
+    static constexpr uint16_t kQuQuestionFlag =
+        0x0080; // Flag in the Class field of a mDNS question that signals a unicast response.
+
     uint16_t mType;  // The type of the data in question section.
     uint16_t mClass; // The class of the data in question section.
 } OT_TOOL_PACKED_END;

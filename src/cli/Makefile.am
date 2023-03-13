@@ -167,6 +167,7 @@ SOURCES_COMMON =                      \
     cli_output.cpp                    \
     cli_srp_client.cpp                \
     cli_srp_server.cpp                \
+    cli_mdns_server.cpp               \
     cli_tcp.cpp                       \
     cli_udp.cpp                       \
     $(NULL)
@@ -201,6 +202,7 @@ noinst_HEADERS                      = \
     cli_output.hpp                    \
     cli_srp_client.hpp                \
     cli_srp_server.hpp                \
+    cli_mdns_server.hpp               \
     cli_tcp.hpp                       \
     cli_udp.hpp                       \
     x509_cert_key.hpp                 \

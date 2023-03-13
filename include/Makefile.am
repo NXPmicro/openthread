@@ -56,6 +56,7 @@ openthread_headers                      = \
     openthread/dns.h                      \
     openthread/dns_client.h               \
     openthread/dnssd_server.h             \
+    openthread/mdns_server.h              \
     openthread/error.h                    \
     openthread/heap.h                     \
     openthread/history_tracker.h          \

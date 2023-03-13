@@ -142,6 +142,9 @@ Interpreter::Interpreter(Instance *aInstance, otCliOutputCallback aCallback, voi
 #if OPENTHREAD_CONFIG_SRP_SERVER_ENABLE
     , mSrpServer(aInstance, *this)
 #endif
+#if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+    , mMdnsServer(aInstance, *this)
+#endif
 #if OPENTHREAD_CONFIG_HISTORY_TRACKER_ENABLE
     , mHistory(aInstance, *this)
 #endif
@@ -2542,6 +2545,124 @@ exit:
 #if OPENTHREAD_CLI_DNS_ENABLE
 template <> otError Interpreter::Process<Cmd("dns")>(Arg aArgs[]) { return mDns.Process(aArgs); }
 #endif
+
+#if OPENTHREAD_CONFIG_MDNS_CLIENT_ENABLE || OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+void Interpreter::HandleMdnsAddressResponse(otError aError, const otDnsAddressResponse *aResponse, void *aContext)
+{
+    static_cast<Interpreter *>(aContext)->HandleMdnsAddressResponse(aError, aResponse);
+}
+
+// Move to own CLI
+void Interpreter::PrintDnsServiceInfo(uint8_t aIndentSize, const otDnsServiceInfo &aServiceInfo)
+{
+    OutputLine(aIndentSize, "Port:%d, Priority:%d, Weight:%d, TTL:%lu", aServiceInfo.mPort, aServiceInfo.mPriority,
+               aServiceInfo.mWeight, ToUlong(aServiceInfo.mTtl));
+    OutputLine(aIndentSize, "Host:%s", aServiceInfo.mHostNameBuffer);
+    OutputFormat(aIndentSize, "HostAddress:");
+    OutputIp6Address(aServiceInfo.mHostAddress);
+    OutputLine(" TTL:%lu", ToUlong(aServiceInfo.mHostAddressTtl));
+    OutputFormat(aIndentSize, "TXT:");
+
+    if (!aServiceInfo.mTxtDataTruncated)
+    {
+        OutputDnsTxtData(aServiceInfo.mTxtData, aServiceInfo.mTxtDataSize);
+    }
+    else
+    {
+        OutputFormat("[");
+        OutputBytes(aServiceInfo.mTxtData, aServiceInfo.mTxtDataSize);
+        OutputFormat("...]");
+    }
+
+    OutputLine(" TTL:%lu", ToUlong(aServiceInfo.mTxtDataTtl));
+}
+
+void Interpreter::HandleMdnsAddressResponse(otError aError, const otDnsAddressResponse *aResponse)
+{
+    otIp6Address address;
+    uint32_t     ttl;
+
+    if (aError == OT_ERROR_NONE)
+    {
+        uint16_t index = 0;
+
+        while (otDnsAddressResponseGetAddress(aResponse, index, &address, &ttl) == OT_ERROR_NONE)
+        {
+            OutputIp6Address(address);
+            OutputFormat(" TTL:%lu ", ToUlong(ttl));
+            index++;
+        }
+    }
+
+    OutputNewLine();
+    if (aError == OT_ERROR_RESPONSE_TIMEOUT)
+        OutputLine("Query timeout");
+}
+
+void Interpreter::HandleMdnsBrowseResponse(otError aError, const otDnsBrowseResponse *aResponse, void *aContext)
+{
+    static_cast<Interpreter *>(aContext)->HandleMdnsBrowseResponse(aError, aResponse);
+}
+
+void Interpreter::HandleMdnsBrowseResponse(otError aError, const otDnsBrowseResponse *aResponse)
+{
+    char             name[OT_DNS_MAX_NAME_SIZE];
+    char             label[OT_DNS_MAX_LABEL_SIZE];
+    uint8_t          txtBuffer[kMaxTxtDataSize];
+    otDnsServiceInfo serviceInfo;
+    uint16_t         index = 0;
+
+    while (otDnsBrowseResponseGetServiceInstance(aResponse, index, label, sizeof(label)) == OT_ERROR_NONE)
+    {
+        OutputLine("%s", label);
+        index++;
+
+        serviceInfo.mHostNameBuffer     = name;
+        serviceInfo.mHostNameBufferSize = sizeof(name);
+        serviceInfo.mTxtData            = txtBuffer;
+        serviceInfo.mTxtDataSize        = sizeof(txtBuffer);
+
+        if (otDnsBrowseResponseGetServiceInfo(aResponse, label, &serviceInfo) == OT_ERROR_NONE)
+        {
+            PrintDnsServiceInfo(kIndentSize, serviceInfo);
+        }
+
+        OutputNewLine();
+    }
+
+    if (aError == OT_ERROR_RESPONSE_TIMEOUT)
+        OutputLine("Query timeout");
+}
+
+void Interpreter::HandleMdnsServiceResponse(otError aError, const otDnsServiceResponse *aResponse, void *aContext)
+{
+    static_cast<Interpreter *>(aContext)->HandleMdnsServiceResponse(aError, aResponse);
+}
+
+void Interpreter::HandleMdnsServiceResponse(otError aError, const otDnsServiceResponse *aResponse)
+{
+    char             name[OT_DNS_MAX_NAME_SIZE];
+    uint8_t          txtBuffer[kMaxTxtDataSize];
+    otDnsServiceInfo serviceInfo;
+
+    if (aError == OT_ERROR_NONE)
+    {
+        serviceInfo.mHostNameBuffer     = name;
+        serviceInfo.mHostNameBufferSize = sizeof(name);
+        serviceInfo.mTxtData            = txtBuffer;
+        serviceInfo.mTxtDataSize        = sizeof(txtBuffer);
+
+        if (otDnsServiceResponseGetServiceInfo(aResponse, &serviceInfo) == OT_ERROR_NONE)
+        {
+            PrintDnsServiceInfo(/* aIndetSize */ 0, serviceInfo);
+            OutputNewLine();
+        }
+    }
+
+    if (aError == OT_ERROR_RESPONSE_TIMEOUT)
+        OutputLine("Query timeout");
+}
+#endif // OPENTHREAD_CONFIG_MDNS_CLIENT_ENABLE || OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
 
 #if OPENTHREAD_FTD
 void Interpreter::OutputEidCacheEntry(const otCacheEntryInfo &aEntry)
@@ -6798,6 +6919,69 @@ exit:
     return error;
 }
 
+#if OPENTHREAD_CONFIG_MDNS_CLIENT_ENABLE || OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+template <> otError Interpreter::Process<Cmd("mdns")>(Arg aArgs[])
+{
+    otError error = OT_ERROR_NONE;
+
+    if (aArgs[0].IsEmpty())
+    {
+        OutputLine("resolve");
+        OutputLine("browse");
+        OutputLine("service");
+#if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+        OutputLine("server");
+#endif
+        ExitNow();
+    }
+
+    if (aArgs[0] == "resolve")
+    {
+        VerifyOrExit(!aArgs[1].IsEmpty(), error = OT_ERROR_INVALID_ARGS);
+        SuccessOrExit(error = otMdnsServerResolveAddress(GetInstancePtr(), aArgs[1].GetCString(),
+                                                         &Interpreter::HandleMdnsAddressResponse, this));
+
+        OutputLine("Searching for hostname %s ...", aArgs[1].GetCString());
+        // error = OT_ERROR_PENDING;
+    }
+    else if (aArgs[0] == "browse")
+    {
+        VerifyOrExit(!aArgs[1].IsEmpty(), error = OT_ERROR_INVALID_ARGS);
+        SuccessOrExit(error = otMdnsServerBrowse(GetInstancePtr(), aArgs[1].GetCString(),
+                                                 &Interpreter::HandleMdnsBrowseResponse, this));
+
+        OutputLine("Browsing for service name %s ...", aArgs[1].GetCString());
+    }
+    else if (aArgs[0] == "service")
+    {
+        VerifyOrExit(!aArgs[1].IsEmpty(), error = OT_ERROR_INVALID_ARGS);
+        SuccessOrExit(error = otMdnsServerResolveService(GetInstancePtr(), aArgs[1].GetCString(),
+                                                         &Interpreter::HandleMdnsServiceResponse, this));
+
+        OutputLine("Searching for service instance %s ...", aArgs[1].GetCString());
+        // error = OT_ERROR_PENDING;
+    }
+    else if (aArgs[0] == "stop")
+    {
+        OutputLine("Stopping query %s", aArgs[1].GetCString());
+        SuccessOrExit(error = otMdnsServerStopQuery(GetInstancePtr(), aArgs[1].GetCString()));
+    }
+#if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+    else if (aArgs[0] == "server")
+    {
+        ExitNow(error = mMdnsServer.Process(aArgs + 1));
+    }
+#endif
+    else
+    {
+        error = OT_ERROR_INVALID_COMMAND;
+    }
+
+exit:
+    return error;
+}
+#endif
+
 #if OPENTHREAD_CONFIG_RADIO_LINK_TREL_ENABLE
 template <> otError Interpreter::Process<Cmd("trel")>(Arg aArgs[])
 {
@@ -7483,6 +7667,9 @@ otError Interpreter::ProcessCommand(Arg aArgs[])
         CmdEntry("mac"),
 #if OPENTHREAD_CONFIG_MAC_FILTER_ENABLE
         CmdEntry("macfilter"),
+#endif
+#if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+        CmdEntry("mdns"),
 #endif
 #if OPENTHREAD_CONFIG_MESH_DIAG_ENABLE && OPENTHREAD_FTD
         CmdEntry("meshdiag"),

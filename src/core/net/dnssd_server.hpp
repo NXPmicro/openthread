@@ -69,6 +69,7 @@ namespace ServiceDiscovery {
 class Server : public InstanceLocator, private NonCopyable
 {
     friend class Srp::Server;
+    friend class MdnsServer;
 
 public:
     /**
@@ -439,6 +440,8 @@ private:
     bool        IsRunning(void) const { return mSocket.IsBound(); }
     static void HandleUdpReceive(void *aContext, otMessage *aMessage, const otMessageInfo *aMessageInfo);
     void        HandleUdpReceive(Message &aMessage, const Ip6::MessageInfo &aMessageInfo);
+
+    static Error ConvertDomainName(char *aName, char *aHostName, NameCompressInfo &aCompressInfo);
     void ProcessQuery(const Header &aRequestHeader, Message &aRequestMessage, const Ip6::MessageInfo &aMessageInfo);
     static Header::Response AddQuestions(const Header     &aRequestHeader,
                                          const Message    &aRequestMessage,
@@ -539,6 +542,7 @@ private:
     static const char kDnssdProtocolTcp[];
     static const char kDnssdSubTypeLabel[];
     static const char kDefaultDomainName[];
+    static const char kDefaultMcastDomainName[];
 
     Ip6::Udp::Socket mSocket;
 

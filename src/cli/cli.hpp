@@ -66,6 +66,7 @@
 #include "cli/cli_history.hpp"
 #include "cli/cli_joiner.hpp"
 #include "cli/cli_mac_filter.hpp"
+#include "cli/cli_mdns_server.hpp"
 #include "cli/cli_network_data.hpp"
 #include "cli/cli_output.hpp"
 #include "cli/cli_srp_client.hpp"
@@ -472,6 +473,16 @@ private:
     void OutputNat64Counters(const otNat64Counters &aCounters);
 #endif
 
+#if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+    void        PrintDnsServiceInfo(uint8_t aIndentSize, const otDnsServiceInfo &aServiceInfo);
+    static void HandleMdnsAddressResponse(otError aError, const otDnsAddressResponse *aResponse, void *aContext);
+    void        HandleMdnsAddressResponse(otError aError, const otDnsAddressResponse *aResponse);
+    static void HandleMdnsBrowseResponse(otError aError, const otDnsBrowseResponse *aResponse, void *aContext);
+    void        HandleMdnsBrowseResponse(otError aError, const otDnsBrowseResponse *aResponse);
+    static void HandleMdnsServiceResponse(otError aError, const otDnsServiceResponse *aResponse, void *aContext);
+    void        HandleMdnsServiceResponse(otError aError, const otDnsServiceResponse *aResponse);
+#endif
+
 #if OPENTHREAD_CONFIG_SNTP_CLIENT_ENABLE
     static void HandleSntpResponse(void *aContext, uint64_t aTime, otError aResult);
 #endif
@@ -596,6 +607,10 @@ private:
 
 #if OPENTHREAD_CONFIG_SRP_SERVER_ENABLE
     SrpServer mSrpServer;
+#endif
+
+#if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+    MdnsServer mMdnsServer;
 #endif
 
 #if OPENTHREAD_CONFIG_HISTORY_TRACKER_ENABLE

@@ -139,6 +139,7 @@ SOURCES_COMMON                                  = \
     api/diags_api.cpp                             \
     api/dns_api.cpp                               \
     api/dns_server_api.cpp                        \
+    api/mdns_server_api.cpp                       \
     api/error_api.cpp                             \
     api/heap_api.cpp                              \
     api/history_tracker_api.cpp                   \
@@ -507,6 +508,7 @@ HEADERS_COMMON                                  = \
     config/dns_client.h                           \
     config/dns_dso.h                              \
     config/dnssd_server.h                         \
+    config/mdns_server.h                          \
     config/dtls.h                                 \
     config/history_tracker.h                      \
     config/ip6.h                                  \

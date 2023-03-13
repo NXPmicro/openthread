@@ -54,11 +54,15 @@ namespace ServiceDiscovery {
 
 RegisterLogModule("DnssdServer");
 
-const char  Server::kDnssdProtocolUdp[]  = "_udp";
-const char  Server::kDnssdProtocolTcp[]  = "_tcp";
-const char  Server::kDnssdSubTypeLabel[] = "._sub.";
-const char  Server::kDefaultDomainName[] = "default.service.arpa.";
-const char *Server::kBlockedDomains[]    = {"ipv4only.arpa."};
+const char  Server::kDnssdProtocolUdp[]       = "_udp";
+const char  Server::kDnssdProtocolTcp[]       = "_tcp";
+const char  Server::kDnssdSubTypeLabel[]      = "._sub.";
+const char  Server::kDefaultDomainName[]      = "default.service.arpa.";
+const char *Server::kBlockedDomains[]         = {"ipv4only.arpa."};
+const char  Server::kDefaultMcastDomainName[] = "local.";
+
+const otIp6Address kMdnsMulticastGroup = {0xFF, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFB};
 
 Server::Server(Instance &aInstance)
     : InstanceLocator(aInstance)
@@ -365,6 +369,54 @@ exit:
     return error;
 }
 
+Error Server ::ConvertDomainName(char *aName, char *aHostName, NameCompressInfo &aCompressInfo)
+{
+    const char              *currentDomainNamePtr;
+    const char              *newDomainNamePtr;
+    uint32_t                 domainNameSize;
+    uint32_t                 aNameDomaninNameOffset;
+    uint32_t                 aHostNameDomaninNameOffset;
+    NameComponentsOffsetInfo nameComponentsInfo;
+
+    if (StringMatch(aCompressInfo.GetDomainName(), kDefaultMcastDomainName, kStringExactMatch))
+    {
+        newDomainNamePtr     = kDefaultMcastDomainName;
+        domainNameSize       = sizeof(kDefaultMcastDomainName);
+        currentDomainNamePtr = kDefaultDomainName;
+    }
+    else if (StringMatch(aCompressInfo.GetDomainName(), kDefaultDomainName, kStringExactMatch))
+    {
+        newDomainNamePtr     = kDefaultDomainName;
+        domainNameSize       = sizeof(kDefaultDomainName);
+        currentDomainNamePtr = kDefaultMcastDomainName;
+    }
+    else
+    {
+        return kErrorFailed;
+    }
+
+    // In case the instance domain name doesn't match the domain name provided by aCompressInfo switch to domain
+    // name used by aCompressInfo
+    if (aName)
+    {
+        FindNameComponents(aName, currentDomainNamePtr, nameComponentsInfo);
+        aNameDomaninNameOffset = nameComponentsInfo.mDomainOffset;
+
+        memcpy(aName + aNameDomaninNameOffset, newDomainNamePtr, domainNameSize);
+    }
+
+    // Convert also the host name to match instance name
+    if (aHostName)
+    {
+        FindNameComponents(aHostName, currentDomainNamePtr, nameComponentsInfo);
+        aHostNameDomaninNameOffset = nameComponentsInfo.mDomainOffset;
+
+        memcpy(aHostName + aHostNameDomaninNameOffset, newDomainNamePtr, domainNameSize);
+    }
+
+    return kErrorNone;
+}
+
 Error Server::AppendPtrRecord(Message          &aMessage,
                               const char       *aServiceName,
                               const char       *aInstanceName,
@@ -378,12 +430,24 @@ Error Server::AppendPtrRecord(Message          &aMessage,
     ptrRecord.Init();
     ptrRecord.SetTtl(aTtl);
 
-    SuccessOrExit(error = AppendServiceName(aMessage, aServiceName, aCompressInfo));
+    char tmpInstName[100];
+    char tmpServiceName[100];
+
+    memcpy(tmpInstName, aInstanceName, strlen(aInstanceName) + 1);
+    memcpy(tmpServiceName, aServiceName, strlen(aServiceName) + 1);
+
+    if (!Name::IsSubDomainOf(aInstanceName, aCompressInfo.GetDomainName()))
+    {
+        SuccessOrExit(error = ConvertDomainName((char *)tmpServiceName, NULL, aCompressInfo));
+        SuccessOrExit(error = ConvertDomainName((char *)tmpInstName, NULL, aCompressInfo));
+    }
+
+    SuccessOrExit(error = AppendServiceName(aMessage, tmpServiceName, aCompressInfo));
 
     recordOffset = aMessage.GetLength();
     SuccessOrExit(error = aMessage.SetLength(recordOffset + sizeof(ptrRecord)));
 
-    SuccessOrExit(error = AppendInstanceName(aMessage, aInstanceName, aCompressInfo));
+    SuccessOrExit(error = AppendInstanceName(aMessage, tmpInstName, aCompressInfo));
 
     ptrRecord.SetLength(aMessage.GetLength() - (recordOffset + sizeof(ResourceRecord)));
     aMessage.Write(recordOffset, ptrRecord);
@@ -411,12 +475,23 @@ Error Server::AppendSrvRecord(Message          &aMessage,
     srvRecord.SetWeight(aWeight);
     srvRecord.SetPort(aPort);
 
-    SuccessOrExit(error = AppendInstanceName(aMessage, aInstanceName, aCompressInfo));
+    char tmpInstName[100];
+    char tmpHostName[100];
+
+    memcpy(tmpInstName, aInstanceName, strlen(aInstanceName) + 1);
+    memcpy(tmpHostName, aHostName, strlen(aHostName) + 1);
+
+    if (!Name::IsSubDomainOf(aInstanceName, aCompressInfo.GetDomainName()))
+    {
+        SuccessOrExit(error = ConvertDomainName(tmpInstName, tmpHostName, aCompressInfo));
+    }
+
+    SuccessOrExit(error = AppendInstanceName(aMessage, tmpInstName, aCompressInfo));
 
     recordOffset = aMessage.GetLength();
     SuccessOrExit(error = aMessage.SetLength(recordOffset + sizeof(srvRecord)));
 
-    SuccessOrExit(error = AppendHostName(aMessage, aHostName, aCompressInfo));
+    SuccessOrExit(error = AppendHostName(aMessage, tmpHostName, aCompressInfo));
 
     srvRecord.SetLength(aMessage.GetLength() - (recordOffset + sizeof(ResourceRecord)));
     aMessage.Write(recordOffset, srvRecord);
@@ -438,7 +513,15 @@ Error Server::AppendAaaaRecord(Message            &aMessage,
     aaaaRecord.SetTtl(aTtl);
     aaaaRecord.SetAddress(aAddress);
 
-    SuccessOrExit(error = AppendHostName(aMessage, aHostName, aCompressInfo));
+    char tmpHostName[100];
+    memcpy(tmpHostName, aHostName, strlen(aHostName) + 1);
+
+    if (!Name::IsSubDomainOf(aHostName, aCompressInfo.GetDomainName()))
+    {
+        SuccessOrExit(error = ConvertDomainName(NULL, tmpHostName, aCompressInfo));
+    }
+
+    SuccessOrExit(error = AppendHostName(aMessage, tmpHostName, aCompressInfo));
     error = aMessage.Append(aaaaRecord);
 
 exit:
@@ -512,6 +595,7 @@ Error Server::AppendInstanceName(Message &aMessage, const char *aName, NameCompr
 
         IgnoreError(FindNameComponents(aName, aCompressInfo.GetDomainName(), nameComponentsInfo));
         OT_ASSERT(nameComponentsInfo.IsServiceInstanceName());
+        VerifyOrExit(nameComponentsInfo.IsServiceInstanceName(), error = kErrorFailed);
 
         aCompressInfo.SetInstanceNameOffset(aMessage.GetLength());
 
@@ -549,7 +633,16 @@ Error Server::AppendTxtRecord(Message          &aMessage,
     TxtRecord     txtRecord;
     const uint8_t kEmptyTxt = 0;
 
-    SuccessOrExit(error = AppendInstanceName(aMessage, aInstanceName, aCompressInfo));
+    char tmpInstName[100];
+
+    memcpy(tmpInstName, aInstanceName, strlen(aInstanceName) + 1);
+
+    if (!Name::IsSubDomainOf(aInstanceName, aCompressInfo.GetDomainName()))
+    {
+        SuccessOrExit(error = ConvertDomainName(tmpInstName, NULL, aCompressInfo));
+    }
+
+    SuccessOrExit(error = AppendInstanceName(aMessage, tmpInstName, aCompressInfo));
 
     txtRecord.Init();
     txtRecord.SetTtl(aTtl);
@@ -765,8 +858,9 @@ Header::Response Server::ResolveQuestionBySrp(const char       *aName,
         bool        needAdditionalAaaaRecord = false;
         const char *hostName                 = host->GetFullName();
 
-        // Handle PTR/SRV/TXT query
-        if (qtype == ResourceRecord::kTypePtr || qtype == ResourceRecord::kTypeSrv || qtype == ResourceRecord::kTypeTxt)
+        // Handle PTR/SRV/TXT/ANY query
+        if (qtype == ResourceRecord::kTypePtr || qtype == ResourceRecord::kTypeSrv ||
+            qtype == ResourceRecord::kTypeTxt || qtype == ResourceRecord::kTypeAny)
         {
             const Srp::Server::Service *service = nullptr;
 
@@ -775,10 +869,13 @@ Header::Response Server::ResolveQuestionBySrp(const char       *aName,
                 uint32_t    instanceTtl         = TimeMilli::MsecToSec(service->GetExpireTime() - TimerMilli::GetNow());
                 const char *instanceName        = service->GetInstanceName();
                 bool        serviceNameMatched  = service->MatchesServiceName(aName);
-                bool        instanceNameMatched = service->MatchesInstanceName(aName);
-                bool        ptrQueryMatched     = qtype == ResourceRecord::kTypePtr && serviceNameMatched;
-                bool        srvQueryMatched     = qtype == ResourceRecord::kTypeSrv && instanceNameMatched;
-                bool        txtQueryMatched     = qtype == ResourceRecord::kTypeTxt && instanceNameMatched;
+                bool        instanceNameMatched = (!service->IsSubType() && service->MatchesInstanceName(aName));
+                bool        ptrQueryMatched =
+                    (qtype == ResourceRecord::kTypePtr || qtype == ResourceRecord::kTypeAny) && serviceNameMatched;
+                bool srvQueryMatched =
+                    (qtype == ResourceRecord::kTypeSrv || qtype == ResourceRecord::kTypeAny) && instanceNameMatched;
+                bool txtQueryMatched =
+                    (qtype == ResourceRecord::kTypeTxt || qtype == ResourceRecord::kTypeAny) && instanceNameMatched;
 
                 if (ptrQueryMatched || srvQueryMatched)
                 {
@@ -817,7 +914,8 @@ Header::Response Server::ResolveQuestionBySrp(const char       *aName,
         }
 
         // Handle AAAA query
-        if ((!aAdditional && qtype == ResourceRecord::kTypeAaaa && host->Matches(aName)) ||
+        if ((!aAdditional && (qtype == ResourceRecord::kTypeAaaa || qtype == ResourceRecord::kTypeAny) &&
+             host->Matches(aName)) ||
             (aAdditional && needAdditionalAaaaRecord &&
              !HasQuestion(aResponseHeader, aResponseMessage, hostName, ResourceRecord::kTypeAaaa)))
         {
@@ -869,7 +967,9 @@ Error Server::ResolveByQueryCallbacks(Header                 &aResponseHeader,
 
     Error error = kErrorNone;
 
+#if !OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
     VerifyOrExit(mQuerySubscribe != nullptr, error = kErrorFailed);
+#endif
 
     queryType = GetQueryTypeAndName(aResponseHeader, aResponseMessage, name);
     VerifyOrExit(queryType != kDnsQueryNone, error = kErrorNotImplemented);
@@ -877,7 +977,11 @@ Error Server::ResolveByQueryCallbacks(Header                 &aResponseHeader,
     query = NewQuery(aResponseHeader, aResponseMessage, aCompressInfo, aMessageInfo);
     VerifyOrExit(query != nullptr, error = kErrorNoBufs);
 
+#if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+    error = Get<MdnsServer>().ResolveQuestionFromDnsSd(name, queryType);
+#else
     mQuerySubscribe(mQueryCallbackContext, name);
+#endif
 
 exit:
     return error;
@@ -1333,14 +1437,19 @@ void Server::FinalizeQuery(QueryTransaction &aQuery, Header::Response aResponseC
     char         name[Name::kMaxNameSize];
     DnsQueryType sdType;
 
+#if !OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
     OT_ASSERT(mQueryUnsubscribe != nullptr);
-
+#endif
     sdType = GetQueryTypeAndName(aQuery.GetResponseHeader(), aQuery.GetResponseMessage(), name);
 
     OT_ASSERT(sdType != kDnsQueryNone);
     OT_UNUSED_VARIABLE(sdType);
 
+#if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+    Get<MdnsServer>().StopQueryFromDnsSd(name);
+#else
     mQueryUnsubscribe(mQueryCallbackContext, name);
+#endif
     aQuery.Finalize(aResponseCode, mSocket);
 }
 

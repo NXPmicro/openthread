@@ -90,7 +90,8 @@ namespace ot {
 namespace Dns {
 namespace ServiceDiscovery {
 class Server;
-}
+class MdnsServer;
+} // namespace ServiceDiscovery
 } // namespace Dns
 
 #if OPENTHREAD_CONFIG_BORDER_ROUTING_ENABLE
@@ -112,6 +113,7 @@ class Server : public InstanceLocator, private NonCopyable
     friend class Service;
     friend class Host;
     friend class Dns::ServiceDiscovery::Server;
+    friend class Dns::ServiceDiscovery::MdnsServer;
 #if OPENTHREAD_CONFIG_BORDER_ROUTING_ENABLE
     friend class BorderRouter::RoutingManager;
 #endif
@@ -178,13 +180,14 @@ public:
      */
     class Service : public otSrpServerService,
                     public LinkedListEntry<Service>,
-                    private Heap::Allocatable<Service>,
+                    public Heap::Allocatable<Service>,
                     private NonCopyable
     {
         friend class Server;
         friend class LinkedList<Service>;
         friend class LinkedListEntry<Service>;
         friend class Heap::Allocatable<Service>;
+        friend class Dns::ServiceDiscovery::MdnsServer;
 
     public:
         /**
@@ -393,7 +396,6 @@ public:
          */
         bool MatchesServiceName(const char *aServiceName) const;
 
-    private:
         struct Description : public LinkedListEntry<Description>,
                              public Heap::Allocatable<Description>,
                              public RetainCountable,
@@ -419,6 +421,7 @@ public:
             TimeMilli    mUpdateTime;
         };
 
+    private:
         enum Action : uint8_t
         {
             kAddNew,
@@ -450,10 +453,11 @@ public:
     class Host : public otSrpServerHost,
                  public InstanceLocator,
                  public LinkedListEntry<Host>,
-                 private Heap::Allocatable<Host>,
+                 public Heap::Allocatable<Host>,
                  private NonCopyable
     {
         friend class Server;
+        friend class Dns::ServiceDiscovery::MdnsServer;
         friend class LinkedListEntry<Host>;
         friend class Heap::Allocatable<Host>;
 
@@ -584,10 +588,10 @@ public:
          */
         bool Matches(const char *aFullName) const;
 
-    private:
         Host(Instance &aInstance, TimeMilli aUpdateTime);
         ~Host(void);
 
+    private:
         Error SetFullName(const char *aFullName);
         void  SetKeyRecord(Dns::Ecdsa256KeyRecord &aKeyRecord);
         void  SetTtl(uint32_t aTtl) { mTtl = aTtl; }

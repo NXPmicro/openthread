@@ -101,6 +101,10 @@ class Client;
 
 namespace Dns {
 
+namespace ServiceDiscovery {
+class MdnsServer;
+}
+
 /**
  * Implements DNS client.
  *
@@ -108,6 +112,7 @@ namespace Dns {
 class Client : public InstanceLocator, private NonCopyable
 {
     friend class ot::Srp::Client;
+    friend class ServiceDiscovery::MdnsServer;
 
     typedef Message Query; // `Message` is used to save `Query` related info.
 
@@ -296,6 +301,7 @@ public:
                      public Clearable<Response>
     {
         friend class Client;
+        friend class ServiceDiscovery::MdnsServer;
 
     protected:
         enum Section : uint8_t
@@ -769,7 +775,6 @@ public:
 
 #endif // OPENTHREAD_CONFIG_DNS_CLIENT_SERVICE_DISCOVERY_ENABLE
 
-private:
     enum QueryType : uint8_t
     {
         kIp6AddressQuery, // IPv6 Address resolution.
@@ -784,6 +789,8 @@ private:
 #endif
         kNoQuery,
     };
+
+private:
 
 #if OPENTHREAD_CONFIG_DNS_CLIENT_OVER_TCP_ENABLE
     enum TcpState : uint8_t

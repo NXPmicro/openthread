@@ -91,6 +91,7 @@
 #include "net/dnssd_server.hpp"
 #include "net/ip6.hpp"
 #include "net/ip6_filter.hpp"
+#include "net/mdns_server.hpp"
 #include "net/nat64_translator.hpp"
 #include "net/nd_agent.hpp"
 #include "net/netif.hpp"
@@ -464,6 +465,9 @@ private:
 #if OPENTHREAD_CONFIG_DNSSD_SERVER_ENABLE
     Dns::ServiceDiscovery::Server mDnssdServer;
 #endif
+#if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+    Dns::ServiceDiscovery::MdnsServer mMdnsServer;
+#endif
 
 #if OPENTHREAD_CONFIG_DNS_DSO_ENABLE
     Dns::Dso mDnsDso;
@@ -836,6 +840,11 @@ template <> inline Utils::SrpClientBuffers &Instance::Get(void) { return mSrpCli
 
 #if OPENTHREAD_CONFIG_DNSSD_SERVER_ENABLE
 template <> inline Dns::ServiceDiscovery::Server &Instance::Get(void) { return mDnssdServer; }
+#endif
+
+#if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
+template <> inline Dns::ServiceDiscovery::MdnsServer &Instance::Get(void) { return mMdnsServer; }
+template <> inline Dns::ServiceDiscovery::MdnsServer::Announcer &Instance::Get(void) { return mMdnsServer.GetAnnouncer(); }
 #endif
 
 #if OPENTHREAD_CONFIG_DNS_DSO_ENABLE
