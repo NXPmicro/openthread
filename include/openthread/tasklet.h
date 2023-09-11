@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2016, The OpenThread Authors.
+ *  Copyright (c) 2023, The OpenThread Authors.
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -50,6 +50,33 @@ extern "C" {
  * @{
  *
  */
+
+#if OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE
+/**
+ * Callback function set to execute from the context of the OpenThread task
+ *
+ * @param[in]  aContext   A pointer to application-specific context.
+ *
+ */
+typedef void (*otTaskletCb)(void *aContext);
+
+/**
+ * Use the generic tasklet defined in the OpenThread instance to execute a callback function in
+ * the context of the OpenThread task. This is useful for OpenThread modules that process data from
+ * an external interface and want to execute the handling function in the context of OpenThread
+ * task.
+ *
+ * @param[in] aInstance A pointer to an OpenThread instance.
+ * @param[in] callback  The callback function that executes from the context of the OpenThread task.
+ * @param[in] context   A pointer to a context that will be used by the callback function.
+ *
+ * @retval OT_ERROR_NONE              Successfully allocated InternalContext.
+ * @retval OT_ERROR_NO_BUFS           Insufficient space to store the InternalContext.
+ * @retval OT_ERROR_INVALID_STATE     OpenThread Instance is not initialized.
+ *
+ */
+otError otTaskletExecute(otInstance *aInstance, otTaskletCb callback, void *context);
+#endif /*OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE*/
 
 /**
  * Run all queued OpenThread tasklets at the time this is called.
