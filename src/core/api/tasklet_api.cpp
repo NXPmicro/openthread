@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2016, The OpenThread Authors.
+ *  Copyright (c) 2023, The OpenThread Authors.
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -50,13 +50,14 @@ exit:
     return;
 }
 
-void otTaskletExecute(otInstance *aInstance, otTaskletCb callback, void *context)
+otError otTaskletExecute(otInstance *aInstance, otTaskletCb callback, void *context)
 {
-    VerifyOrExit(otInstanceIsInitialized(aInstance));
-    AsCoreType(aInstance).Get<GenericTasklet>().PostWithCb(callback, context);
+    Error error = kErrorNone;
+    VerifyOrExit(otInstanceIsInitialized(aInstance), error = kErrorInvalidState);
+    error = AsCoreType(aInstance).Get<GenericTasklet>().PostWithCb(callback, context);
 
 exit:
-    return;
+    return error;
 }
 
 bool otTaskletsArePending(otInstance *aInstance)

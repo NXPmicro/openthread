@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2016, The OpenThread Authors.
+ *  Copyright (c) 2023, The OpenThread Authors.
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -109,11 +109,12 @@ void GenericTasklet::HandleGenericTasklet(Tasklet &aTasklet)
     }
 }
 
-void GenericTasklet::PostWithCb(TaskletCallback aCallback, void *aContext) 
+Error GenericTasklet::PostWithCb(TaskletCallback aCallback, void *aContext) 
 {
+    Error            error    = kErrorNone;
     InternalContext *tmpEntry = nullptr;
-    InternalContext *entry = InternalContext::AllocateAndInit(aCallback, aContext);
-    VerifyOrExit(entry != nullptr);
+    InternalContext *entry    = InternalContext::AllocateAndInit(aCallback, aContext);
+    VerifyOrExit(entry != nullptr, error = kErrorNoBufs);
 
     tmpEntry = mEventList.GetTail();
     if (tmpEntry != nullptr)
@@ -129,7 +130,7 @@ void GenericTasklet::PostWithCb(TaskletCallback aCallback, void *aContext)
     this->Post();
 
 exit:
-    return;
+    return error;
 }
 
 Error GenericTasklet::InternalContext::Init(GenericTasklet::TaskletCallback aCallback, void* aContext)

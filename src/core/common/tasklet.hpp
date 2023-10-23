@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2016, The OpenThread Authors.
+ *  Copyright (c) 2023, The OpenThread Authors.
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -266,15 +266,18 @@ public:
      *
      * @param[in] aCallback The callback function that executes from the context of the OpenThread task.
      * @param[in] aContext  A pointer to a context that will be used by the callback function.
-     * 
+     *
+     * @retval kErrorNone             Successfully allocated InternalContext.
+     * @retval kErrorNoBufs           Insufficient space to store the InternalContext.
+     *
      */
-    void PostWithCb(TaskletCallback aCallback, void *aContext);
+    Error PostWithCb(TaskletCallback aCallback, void *aContext);
     /**
-     * 
+     *
      * Static function used as the handler for the tasklet.
      *
      * @param[in] aTasklet The Tasklet object.
-     * 
+     *
      */
     static void HandleGenericTasklet(Tasklet &aTasklet);
 
