@@ -852,8 +852,6 @@ template <> inline Dns::ServiceDiscovery::Server &Instance::Get(void) { return m
 
 #if OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
 template <> inline Dns::ServiceDiscovery::MdnsServer &Instance::Get(void) { return mMdnsServer; }
-template <> inline Dns::ServiceDiscovery::MdnsServer::Announcer &Instance::Get(void) { return mMdnsServer.GetAnnouncer(); }
-template <> inline Dns::ServiceDiscovery::MdnsServer::Prober &Instance::Get(void) { return mMdnsServer.GetProber(); }
 #endif
 
 #if OPENTHREAD_CONFIG_DNS_DSO_ENABLE

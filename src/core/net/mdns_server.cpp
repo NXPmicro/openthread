@@ -64,23 +64,17 @@ MdnsServer::MdnsServer(Instance &aInstance)
  #if MDNS_USE_TASKLET
     , mHandleUdpReceive(aInstance)
 #endif
-    , mAnnouncer(aInstance)
-    , mMdnsProbing(aInstance)
-    , mMdnsAnnouncing(aInstance)
     , mServiceUpdateId(1)
-    , mProber(aInstance)
     , mIsHostVerifiedUnique(false)
-    , mMdnsOustandingUpdate(aInstance)
 {
     SetState(kStateStopped);
 }
 
 Error MdnsServer::Start(void)
 {
-    Error              error     = kErrorNone;
-    OutstandingUpdate *update    = nullptr;
-    OutstandingUpdate *tmpUpdate = nullptr;
-    Service           *next      = nullptr;
+    Error error = kErrorNone;
+    Prober  *prober = nullptr;
+    Service *next   = nullptr;
 
     VerifyOrExit(!IsRunning(), error = kErrorAlready);
     VerifyOrExit(GetHostName() != nullptr, error = kErrorInvalidState);
@@ -95,30 +89,19 @@ Error MdnsServer::Start(void)
 
     LogInfo("started");
 
-    update = OutstandingUpdate::AllocateAndInit(0, nullptr, OutstandingUpdate::kTypeProbeAndAnnounce);
-    VerifyOrExit(update != nullptr, error = kErrorFailed);
-    // Check if there are any associated services for this host
+    prober = AllocateProber(true, nullptr, 0);
+    VerifyOrExit(prober != nullptr, error = kErrorNoBufs);
+
     if(!mServices.IsEmpty())
     {
         for (Service *service = mServices.GetHead(); service != nullptr; service = next)
         {
             next = service->GetNext();
-            update->PushService(*service);
+            prober->PushServiceId(service->GetServiceUpdateId());
         }
     }
-    tmpUpdate = mOutstandingUpdates.GetTail();
-    if (tmpUpdate != nullptr)
-    {
-        // Put the new element at the end of the list so it's easier to iterate from older to newer using list get head
-        mOutstandingUpdates.PushAfter(*update, *tmpUpdate);
-    }
-    else
-    {
-        // Push as head since there is no element in the list
-        mOutstandingUpdates.Push(*update);
-    }
 
-    mMdnsOustandingUpdate.Post();
+    PublishHostAndServices(prober);
 exit:
 
     if (error != kErrorNone)
@@ -220,6 +203,19 @@ void MdnsServer::StopQueryFromDnsSd(const char *aName)
     IgnoreReturnValue(StopQuery(queryName));
 }
 
+Message *MdnsServer::NewPacket()
+{
+    Error    error  = kErrorNone;
+    Message *packet = nullptr;
+
+    VerifyOrExit((packet = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
+    SuccessOrExit(error = packet->SetLength(sizeof(Header)));
+
+exit:
+    FreeMessageOnError(packet, error);
+    return packet;
+}
+
 void MdnsServer::HandleUdpReceive(void *aContext, otMessage *aMessage, const otMessageInfo *aMessageInfo)
 {
     static_cast<MdnsServer *>(aContext)->HandleUdpReceive(AsCoreType(aMessage), AsCoreType(aMessageInfo));
@@ -309,13 +305,14 @@ void MdnsServer::ProcessQuery(const Dns::Header      &aRequestHeader,
     VerifyOrExit(!aRequestHeader.IsTruncationFlagSet(), error = kErrorDrop);
     VerifyOrExit(aRequestHeader.GetQuestionCount() > 0, error = kErrorDrop);
 
-    VerifyOrExit((responseMessage = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
-    SuccessOrExit(error = responseMessage->SetLength(sizeof(Header)));
+    VerifyOrExit(responseMessage = NewPacket(), error = kErrorNoBufs);
 
-    if ((Get<MdnsServer::Prober>().GetState() == MdnsServer::Prober::kProbing) &&
-        aRequestHeader.GetAuthorityRecordCount() > 0 && aRequestHeader.GetAnswerCount() == 0)
+    if (aRequestHeader.GetAuthorityRecordCount() > 0 && aRequestHeader.GetAnswerCount() == 0)
     {
-        Get<MdnsServer::Prober>().ProcessQuery(aRequestHeader, aRequestMessage);
+        for (Prober &p : mProbingInstances)
+        {
+            p.ProcessQuery(aRequestHeader, aRequestMessage);
+        }
     }
 
     responseHeader.SetType(Header::kTypeResponse);
@@ -400,10 +397,10 @@ void MdnsServer::ProcessResponse(const Header           &aRequestHeader,
         VerifyOrExit(aMessageInfo.GetPeerAddr().IsLinkLocal() || AddressIsFromLocalSubnet(aMessageInfo.GetPeerAddr()));
     }
 
-    if (Get<MdnsServer::Prober>().GetState() == MdnsServer::Prober::kProbing)
-    {
-        Get<MdnsServer::Prober>().ProcessResponse(aRequestHeader, aRequestMessage);
-    }
+        for (Prober &p : mProbingInstances)
+        {
+            p.ProcessResponse(aRequestHeader, aRequestMessage);
+        }
 
     // if (ans.info.type == DNS_RRTYPE_ANY || ans.info.klass != DNS_RRCLASS_IN) {
     /* Skip answers for ANY type or if class != IN */
@@ -1242,7 +1239,7 @@ Error MdnsServer::AddService(const char          *aInstanceName,
 {
     Service           *service = nullptr;
     Error              error   = kErrorNone;
-    OutstandingUpdate *update  = nullptr;
+    Prober *prober = nullptr;
 
     // Ensure the same service does not exist already.
     VerifyOrExit(FindNextService(nullptr, aServiceName, aInstanceName) == nullptr, error = kErrorFailed);
@@ -1297,22 +1294,9 @@ Error MdnsServer::AddService(const char          *aInstanceName,
 
     if (GetState() == kStateRunning)
     {
-        update = OutstandingUpdate::AllocateAndInit(service->GetServiceUpdateId(), nullptr, OutstandingUpdate::kTypeProbeAndAnnounce);
-        VerifyOrExit(update != nullptr, error = kErrorFailed);
-        OutstandingUpdate *tmpUpdate = mOutstandingUpdates.GetTail();
-
-        if (tmpUpdate != nullptr)
-        {
-            // Put the new element at the end of the list so it's easier to iterate from older to newer using list get head
-            mOutstandingUpdates.PushAfter(*update, *tmpUpdate);
-        }
-        else
-        {
-            // Push as head since there is no element in the list
-            mOutstandingUpdates.Push(*update);
-        }
-
-        mMdnsOustandingUpdate.Post();
+        prober = AllocateProber(true, nullptr, service->GetServiceUpdateId());
+        VerifyOrExit(prober != nullptr, error = kErrorNoBufs);
+        PublishHostAndServices(prober);
     }
 
 exit:
@@ -1338,7 +1322,6 @@ Error MdnsServer::UpdateServiceContent(Service             *aService,
 
     if (aTxtEntries != nullptr)
     {
-
         error = kErrorNone;
 
         if (aTxtEntries->mKey)
@@ -1364,13 +1347,14 @@ Error MdnsServer::UpdateServiceContent(Service             *aService,
                     txtBufferOffset += aTxtEntries[i].mValueLength;
                 }
             }
-            VerifyOrExit(memcmp(aService->mTxtData.GetBytes(), txtBuffer, txtBufferOffset), error = kErrorDuplicated);
+            VerifyOrExit(memcmp(aService->mTxtData.GetBytes(), txtBuffer, txtBufferOffset) != 0,
+                     error = kErrorDuplicated);
             VerifyOrExit(aService->mTxtData.SetFrom(txtBuffer, txtBufferOffset) == kErrorNone, error = kErrorFailed);
         }
         else
         {
-            VerifyOrExit(memcmp(aService->mTxtData.GetBytes(), aTxtEntries, aTxtEntries->mValueLength),
-                         error = kErrorDuplicated);
+            VerifyOrExit(memcmp(aService->mTxtData.GetBytes(), aTxtEntries->mValue, aTxtEntries->mValueLength) != 0,
+                     error = kErrorDuplicated);
             VerifyOrExit(aService->mTxtData.SetFrom(aTxtEntries->mValue, aTxtEntries->mValueLength) == kErrorNone,
                          error = kErrorFailed);
         }
@@ -1386,11 +1370,9 @@ Error MdnsServer::UpdateService(const char          *aInstanceName,
                                 const otDnsTxtEntry *aTxtEntries,
                                 uint8_t              mNumTxtEntries)
 {
-    Error              error          = kErrorNone;
-    Service           *service        = nullptr;
-    OutstandingUpdate *update         = nullptr;
-    OutstandingUpdate *tmpUpdate      = nullptr;
-    OutstandingUpdate *matchingUpdate = nullptr;
+    Error      error     = kErrorNone;
+    Service   *service   = nullptr;
+    Announcer *announcer = nullptr;
 
     // Ensure the service exists already.
     service = FindService(aServiceName, aInstanceName);
@@ -1401,34 +1383,18 @@ Error MdnsServer::UpdateService(const char          *aInstanceName,
 
     VerifyOrExit(service->GetState() >= Service::kAnnouncing, error = kErrorInvalidState);
 
-    update = OutstandingUpdate::AllocateAndInit(service->GetServiceUpdateId(), nullptr, OutstandingUpdate::kTypeAnnounce);
-    VerifyOrExit(update != nullptr, error = kErrorFailed);
-    tmpUpdate = mOutstandingUpdates.GetTail();
-
-    matchingUpdate = mOutstandingUpdates.FindMatching(service->mId);
-    if (matchingUpdate != nullptr)
+    announcer = ReturnAnnouncingInstanceContainingServiceId(service->GetServiceUpdateId());
+    if (announcer != nullptr)
     {
-        if(matchingUpdate->GetState() == OutstandingUpdate::State::kStateAnnouncing)
-        {
-            Get<MdnsServer::Announcer>().Stop();
-        }
-        mOutstandingUpdates.Remove(*matchingUpdate);
-        tmpUpdate = mOutstandingUpdates.GetTail();
-        matchingUpdate->Free();
-    }
-
-    if (tmpUpdate != nullptr)
-    {
-        // Put the new element at the end of the list so it's easier to iterate from older to newer using list get head
-        mOutstandingUpdates.PushAfter(*update, *tmpUpdate);
+        announcer->Stop();
+        AnnounceHostAndServices(*announcer);
     }
     else
     {
-        // Push as head since there is no element in the list
-        mOutstandingUpdates.Push(*update);
+        announcer = AllocateAnnouncer(service->GetServiceUpdateId());
+        VerifyOrExit(announcer != nullptr, error = kErrorNoBufs);
+        AnnounceHostAndServices(*announcer);
     }
-
-    mMdnsOustandingUpdate.Post();
 
 exit:
     if (error == kErrorInvalidState)
@@ -1452,51 +1418,76 @@ exit:
 
 Error MdnsServer::RemoveService(const char *aInstanceName, const char *aServiceName)
 {
-    Service *service;
-    Error    error = kErrorNone;
-    OutstandingUpdate *update = nullptr;
+    Service       *service   = nullptr;
+    Error          error     = kErrorNone;
+    Prober        *prober    = nullptr;
+    Announcer     *announcer = nullptr;
+    Service::State state;
 
     VerifyOrExit((service = FindService(aServiceName, aInstanceName)) != nullptr, error = kErrorNotFound);
-    if (service->GetState() >= Service::kProbed)
+    state = service->GetState();
+
+    // handle the case when service was already probed and announce on the network
+    if (state == Service::kAnnounced)
     {
         SuccessOrExit(error = AnnounceServiceGoodbye(*service));
     }
 
-    mServices.Remove(*service);
-
-
-    // check if this service is included in an outstanding update that has a service list associated
-    update =  mOutstandingUpdates.GetHead();
-    for (; update != nullptr; update = update->GetNext())
+    // check if this service is included in an announce procedure
+    else if(state == Service::State::kAnnouncing)
     {
-        if(!update->GetServiceList().IsEmpty())
+        announcer = ReturnAnnouncingInstanceContainingServiceId(service->GetServiceUpdateId());
+        if(announcer != nullptr)
         {
-            if(update->GetServiceList().FindMatching(service->mId))
+            announcer->Stop();
+            if(announcer->GetId())
             {
-                if(update->GetState() == OutstandingUpdate::kStateProbing)
-                {
-                    update->GetServiceList().RemoveMatching(service->mId);
-                    Get<MdnsServer::Prober>().Stop(kErrorAbort);
-                    mMdnsOustandingUpdate.Post();
-                }
+                RemoveAnnouncingInstance(announcer->GetId());
+                ExitNow();
+            }
+            else
+            {
+                // recreate the announce message, and restart
+                UpdateExistingAnnouncerDataEntries(*announcer, *service);
+                ExitNow();
+            }
+        }
+    }
+    // check if this service is included in a probe procedure
+    else
+    {
+        prober = ReturnProbingInstanceContainingServiceId(service->GetServiceUpdateId());
+        if(prober != nullptr)
+        {
+            /*Remove service is called from 2 different application flows:
+                1) Remove service  -> when an application wants to remove this specific service
+                2) Service register failed to verify it's uniqueness. Remove service will be called after the prober
+               instance for this service has been previously stopped.
+            */
+            if(prober->IsRunning())
+            {
+                prober->Stop(kErrorNotFound);
+            }
+            if(prober->GetId())
+            {
+                RemoveProbingInstance(prober->GetId());
+                ExitNow();
+            }
+            else
+            {
+                // recreate the probing message and restart
+                UpdateExistingProberDataEntries(*prober, *service);
+                ExitNow();
             }
         }
     }
 
-    // Remove any outstanding updates
-    update = mOutstandingUpdates.FindMatching(service->mId);
-    if (update != nullptr)
-    {
-        if(update->GetState() == OutstandingUpdate::kStateProbing)
-        {
-            Get<MdnsServer::Prober>().Stop(kErrorAbort);
-        }
-        mOutstandingUpdates.Remove(*update);
-        update->Free();
-    }
-    service->Free();
-
 exit:
+    if (service)
+    {
+        mServices.Remove(*service);
+        service->Free();
+    }
     return error;
 }
 
@@ -1507,8 +1498,10 @@ Error MdnsServer::AnnounceServiceGoodbye(Service &aService)
     Header           header;
     Error            error;
 
-    VerifyOrExit((message = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
-    SuccessOrExit(error = message->SetLength(sizeof(Header)));
+    Announcer *announcer = Announcer::Allocate(GetInstance());
+    VerifyOrExit(announcer != nullptr, error = kErrorNoBufs);
+
+    VerifyOrExit((message = NewPacket()) != nullptr, error = kErrorNoBufs);
 
     header.SetType(Header::kTypeResponse);
 
@@ -1516,9 +1509,21 @@ Error MdnsServer::AnnounceServiceGoodbye(Service &aService)
                                                   0, compressInfo));
     Server::IncResourceRecordCount(header, false);
 
-    SuccessOrExit(error = SendPacket(*message, header));
+    message->Write(0, header);
+
+    VerifyOrExit(message->GetLength() > sizeof(Header), error = kErrorDrop);
+
+    announcer->EnqueueAnnounceMessage(*message);
+    announcer->StartAnnouncing();
 
 exit:
+    if (error != kErrorNone)
+    {
+        if (announcer)
+        {
+            announcer->Free();
+        }
+    }
     FreeMessageOnError(message, error);
     return error;
 }
@@ -1529,10 +1534,12 @@ Error MdnsServer::AnnounceHostGoodbye()
     Message         *message = nullptr;
     Header           header;
     Service         *service;
-    Error            error;
+    Error            error = kErrorNone;
 
-    VerifyOrExit((message = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
-    SuccessOrExit(error = message->SetLength(sizeof(Header)));
+    Announcer *announcer = Announcer::Allocate(GetInstance());
+    VerifyOrExit(announcer != nullptr, error = kErrorNoBufs);
+
+    VerifyOrExit((message = NewPacket()) != nullptr, error = kErrorNoBufs);
 
     header.SetType(Header::kTypeResponse);
 
@@ -1540,24 +1547,40 @@ Error MdnsServer::AnnounceHostGoodbye()
     {
         SuccessOrExit(error = Server::AppendPtrRecord(*message, service->GetServiceName(), service->GetInstanceName(),
                                                       0, compressInfo));
+        Server::IncResourceRecordCount(header, false);
     }
-    SuccessOrExit(error = SendPacket(*message, header));
+
+   message->Write(0, header);
+
+   VerifyOrExit(message->GetLength() > sizeof(Header), error = kErrorDrop);
+
+   announcer->EnqueueAnnounceMessage(*message);
+   announcer->StartAnnouncing();
 
 exit:
-    FreeMessageOnError(message, error);
-    return error;
+   if (error != kErrorNone)
+   {
+        if (announcer)
+        {
+            announcer->Free();
+        }
+   }
+   FreeMessageOnError(message, error);
+   return error;
 }
 
-Error MdnsServer::AnnounceSrpHostGoodbye(const otSrpServerHost *aHost)
+Error MdnsServer::AnnounceSrpHostGoodbye(otSrpServerServiceUpdateId aId, const otSrpServerHost *aHost)
 {
-    NameCompressInfo    compressInfo(kDefaultDomainName);
-    Message            *message = nullptr;
-    Header              header;
+    NameCompressInfo            compressInfo(kDefaultDomainName);
+    Message                    *message = nullptr;
+    Header                      header;
     const Srp::Server::Service *service = nullptr;
-    Error               error;
+    Error                       error;
 
-    VerifyOrExit((message = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
-    SuccessOrExit(error = message->SetLength(sizeof(Header)));
+    Announcer *announcer = AllocateAnnouncer(aId);
+    VerifyOrExit(announcer != nullptr, error = kErrorNoBufs);
+
+    VerifyOrExit((message = NewPacket()) != nullptr, error = kErrorNoBufs);
 
     header.SetType(Header::kTypeResponse);
 
@@ -1569,32 +1592,21 @@ Error MdnsServer::AnnounceSrpHostGoodbye(const otSrpServerHost *aHost)
         Server::IncResourceRecordCount(header, false);
     }
 
-    SuccessOrExit(error = SendPacket(*message, header));
+    message->Write(0, header);
+
+    VerifyOrExit(message->GetLength() > sizeof(Header), error = kErrorDrop);
+
+    announcer->EnqueueAnnounceMessage(*message);
+    announcer->StartAnnouncing();
 
 exit:
-    FreeMessageOnError(message, error);
-    return error;
-}
-
-Error MdnsServer::AnnounceSrpServiceGoodbye(const otSrpServerService *aService)
-{
-    NameCompressInfo compressInfo(kDefaultDomainName);
-    Message         *message = nullptr;
-    Header           header;
-    Error            error;
-
-    VerifyOrExit((message = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
-    SuccessOrExit(error = message->SetLength(sizeof(Header)));
-
-    header.SetType(Header::kTypeResponse);
-
-    SuccessOrExit(error = Get<Server>().AppendPtrRecord(*message, AsCoreType(aService).GetServiceName(),
-                                                        AsCoreType(aService).GetInstanceName(), 0, compressInfo));
-    Server::IncResourceRecordCount(header, false);
-
-    SuccessOrExit(error = SendPacket(*message, header));
-
-exit:
+    if (error != kErrorNone)
+    {
+        if (announcer)
+        {
+            RemoveAnnouncingInstance(announcer->GetId());
+        }
+    }
     FreeMessageOnError(message, error);
     return error;
 }
@@ -1756,176 +1768,86 @@ MdnsServer::Service *MdnsServer::FindService(const char *aServiceName, const cha
     return AsNonConst(FindNextService(nullptr, aServiceName, aInstanceName));
 }
 
-void MdnsServer::OutstandingUpdateHandler()
+void MdnsServer::HandleProberFinished(const Prober &aProber, Error aError, MdnsServerProbingContext *aContext)
 {
-    OutstandingUpdate *update = mOutstandingUpdates.GetHead();
-
-    switch (update->GetType())
-    {
-    case OutstandingUpdate::kTypeProbeAndAnnounce:
-        mMdnsProbing.Post();
-        break;
-
-    case OutstandingUpdate::kTypeAnnounce:
-        mMdnsAnnouncing.Post();
-        break;
-
-    case OutstandingUpdate::kTypeHostGoodbyeAnnouncement:
-        AnnounceHostGoodbye();
-        mOutstandingUpdates.Remove(*update);
-        update->Free();
-        break;
-
-    case OutstandingUpdate::kTypeSrpHostGoodbyeAnnouncement:
-        AnnounceSrpHostGoodbye(update->GetHost());
-        Get<Srp::Server>().HandleServiceUpdateResult(update->GetId(), kErrorNone);
-        mOutstandingUpdates.Remove(*update);
-        update->Free();
-        break;
-
-    case OutstandingUpdate::kTypeSrpServiceRemoved:
-        AnnounceSrpServiceGoodbye(update->GetService());
-        Get<Srp::Server>().HandleServiceUpdateResult(update->GetId(), kErrorNone);
-        mOutstandingUpdates.Remove(*update);
-        update->Free();
-        break;
-
-    default:
-        break;
-    }
-}
-
-void MdnsServer::HandleProberFinished(Error aError)
-{
-    OutstandingUpdate *update = nullptr;
-    update                    = mOutstandingUpdates.GetHead();
-
-    if (Get<MdnsServer::Prober>().IsProbingForHost())
+    if (aProber.IsProbingForHost())
     {
         if (aError == kErrorNone)
         {
-            mIsHostVerifiedUnique |= true;
-            mMdnsAnnouncing.Post();
-            for(Service &service : mServices)
+            (void)AnnounceHostAndServices(AsNonConst(aProber));
+
+            if (!aProber.GetId())
             {
-                if (service.GetState() == Service::kProbing)
+                mIsHostVerifiedUnique |= true;
+
+                const uint32_t *ids;
+                uint8_t         numIds = 0;
+
+                ids = aProber.GetServicesIdList(numIds);
+
+                for (uint8_t i = 0; i < numIds; i++)
                 {
-                    service.SetState(Service::kProbed);
+                    Service *s = mServices.FindMatching(ids[i]);
+                    if (s != nullptr)
+                    {
+                        s->SetState(Service::State::kProbed);
+                    }
                 }
+            }
+            else
+            {
+                Service *s = mServices.FindMatching(aProber.GetId());
+                if (s != nullptr)
+                {
+                    s->SetState(Service::kProbed);
+                }
+            }
+        }
+        else
+        {
+            if (aError == kErrorDuplicated)
+            {
+                MdnsServer::Service *service = mServices.GetHead();
+
+                for (; service != nullptr; service = service->GetNext())
+
+                {
+                    if (service->MatchesInstanceName(aContext->name))
+                    {
+                        UpdateExistingProberDataEntries(AsNonConst(aProber), *service);
+                        RemoveService(service->GetInstanceName(), service->GetServiceName());
+                        break;
+                    }
+                }
+                mCallback.InvokeIfSet(aContext);
             }
         }
     }
     else
     {
-        Get<Srp::Server>().HandleServiceUpdateResult(update->GetId(), aError);
-        if (aError == kErrorNone)
-        {
-            mMdnsAnnouncing.Post();
-        }
-    }
-
-    if (aError != kErrorNone)
-    {
-        if (update != nullptr && !update->GetHost())
-        {
-            IgnoreError(mOutstandingUpdates.Remove(*update));
-            update->Free();
-        }
+        otSrpServerServiceUpdateId id = aProber.GetId();
+        AnnounceFromSrp(aProber.GetHost(), id);
     }
 }
 
-void MdnsServer::HandleAnnouncerFinished()
+void MdnsServer::HandleAnnouncerFinished(const Announcer &aAnnouncer)
 {
-    OutstandingUpdate *update = nullptr;
-    update                    = mOutstandingUpdates.GetHead();
-    if(update)
+    const uint32_t *ids;
+    uint8_t         numIds = 0;
+
+    ids = aAnnouncer.GetServicesIdList(numIds);
+
+    for (uint8_t i = 0; i < numIds; i++)
     {
-        IgnoreError(mOutstandingUpdates.Remove(*update));
-        update->Free();
-    }
-
-    for(Service &service : mServices)
-    {
-        if(service.GetState() == Service::kAnnouncing)
+        Service *s = mServices.FindMatching(ids[i]);
+        if (s != nullptr)
         {
-            service.SetState(Service::kAnnounced);
-        }
-    }
-
-    CheckForOutstandingUpdates();
-}
-
-void MdnsServer::MdnsProbingHandler()
-{
-    Error error;
-    OutstandingUpdate *update = mOutstandingUpdates.GetHead();
-    OutstandingUpdate * tmpUpdate = nullptr;
-
-    while (update != nullptr)
-    {
-        if (update->GetState() == OutstandingUpdate::State::kStateIdle)
-        {
-            if (update->GetId() != 0 && update->GetHost() != nullptr)
-            {
-                error = PublishFromSrp(AsConst(update->GetHost()));
-            }
-            else
-            {
-                error = PublishHostAndServices(update);
-            }
-
-            if (error != kErrorNone)
-            {
-                tmpUpdate = update->GetNext();
-                mOutstandingUpdates.Remove(*update);
-                update->Free();
-                update = tmpUpdate;
-            }
-            else
-            {
-                break;
-            }
-        }
-        else
-        {
-            update = update->GetNext();
+            s->SetState(Service::State::kAnnounced);
         }
     }
 }
 
-void MdnsServer::MdnsAnnouncingHandler()
-{
-    OutstandingUpdate *update = mOutstandingUpdates.GetHead();
-    if(update != nullptr)
-    {
-        //update->SetState(OutstandingUpdate::State::kStateAnnouncing);
-        Message *announceMessage = nullptr;
-        if(!update->GetHostName())
-        {
-            announceMessage = CreateHostAndServicesAnnounceMessage(update);
-        }
-        else
-        {
-            announceMessage = CreateSrpAnnounceMessage(update->GetHostName());
-        }
-
-        VerifyOrExit(announceMessage != nullptr);
-        Get<MdnsServer::Announcer>().EnqueueAnnounceMessage(*announceMessage);
-        Get<MdnsServer::Announcer>().StartAnnouncing();
-    }
-exit:
-    return;
-}
-
-void MdnsServer::CheckForOutstandingUpdates()
-{
-    if (!mOutstandingUpdates.IsEmpty())
-    {
-        mMdnsOustandingUpdate.Post();
-    }
-}
-
-Message* MdnsServer::CreateHostAndServicesAnnounceMessage(OutstandingUpdate *aUpdate)
+Message* MdnsServer::CreateHostAndServicesAnnounceMessage(Announcer &aAnnouncer)
 {
     Error            error = kErrorNone;
     NameCompressInfo compressInfo(kDefaultDomainName);
@@ -1933,25 +1855,27 @@ Message* MdnsServer::CreateHostAndServicesAnnounceMessage(OutstandingUpdate *aUp
     uint8_t             addrNum;
     const Ip6::Address *addrs   = nullptr;
     uint32_t            hostTtl = 0;
+    const uint32_t     *ids;
+    uint8_t             numIds = 0;
 
-    if (!aUpdate->GetId())
+    ids = aAnnouncer.GetServicesIdList(numIds);
+
+    if (!aAnnouncer.GetId())
     {
         addrs   = Get<MdnsServer>().GetAddresses(addrNum);
         hostTtl = 0;
     }
 
-    MdnsServer::Service *next    = nullptr;
     MdnsServer::Service *service = nullptr;
 
     Message *message = nullptr;
     Header   header;
 
-    VerifyOrExit((message = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
-    SuccessOrExit(error = message->SetLength(sizeof(Header)));
+    VerifyOrExit((message = NewPacket()) != nullptr, error = kErrorNoBufs);
 
     header.SetType(Header::kTypeResponse);
 
-    if (!aUpdate->GetId())
+    if (!aAnnouncer.GetId())
     {
         // AAAA Resource Record
         for (uint8_t i = 0; i < addrNum; i++)
@@ -1962,9 +1886,9 @@ Message* MdnsServer::CreateHostAndServicesAnnounceMessage(OutstandingUpdate *aUp
         }
     }
 
-    if (aUpdate->GetServiceList().IsEmpty() && aUpdate->GetId())
+    if (!numIds && aAnnouncer.GetId())
     {
-        service = Get<MdnsServer>().FindServiceById(aUpdate->GetId());
+        service = Get<MdnsServer>().FindServiceById(aAnnouncer.GetId());
         if (service != nullptr)
         {
             service->SetState(Service::kAnnouncing);
@@ -1973,12 +1897,14 @@ Message* MdnsServer::CreateHostAndServicesAnnounceMessage(OutstandingUpdate *aUp
     }
     else
     {
-        for (service = aUpdate->GetServiceList().GetHead(); service != nullptr; service = next)
+        for (uint8_t i = 0; i < numIds; i++)
         {
-            next = service->GetNext();
-
-            service->SetState(Service::kAnnouncing);
-            SuccessOrExit(Get<MdnsServer>().AppendServiceInfo(*message, header, *service, compressInfo));
+            service = mServices.FindMatching(ids[i]);
+            if (service != nullptr)
+            {
+                service->SetState(Service::kAnnouncing);
+                SuccessOrExit(Get<MdnsServer>().AppendServiceInfo(*message, header, *service, compressInfo));
+            }
         }
     }
 
@@ -1991,66 +1917,87 @@ exit:
     return nullptr;
 }
 
-Message *MdnsServer::CreateHostAndServicesPublishMessage(OutstandingUpdate *aUpdate)
+Message *MdnsServer::CreateHostAndServicesPublishMessage(Prober *aProber)
 {
     Error            error = kErrorNone;
     NameCompressInfo compressInfo(kDefaultDomainName);
 
     uint8_t              addrNum;
+    const uint32_t      *ids;
+    uint8_t              numIds  = 0;
     const Ip6::Address  *addrs   = GetAddresses(addrNum);
     uint32_t             hostTtl = 0;
-    MdnsServer::Service *next    = nullptr;
     MdnsServer::Service *service = nullptr;
+
+    ids = aProber->GetServicesIdList(numIds);
 
     Header header;
 
     Message *message        = nullptr;
-    Message *QSectionMsg    = nullptr;
-    Message *AuthSectionMsg = nullptr;
 
     Question question(ResourceRecord::kTypeAny, ResourceRecord::kClassInternet);
-    VerifyOrExit((message = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
-    VerifyOrExit((QSectionMsg = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
-    VerifyOrExit((AuthSectionMsg = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
+    VerifyOrExit((message = NewPacket()) != nullptr, error = kErrorNoBufs);
 
     question.SetQuQuestion();
 
     // Allocate space for DNS header
     SuccessOrExit(error = message->SetLength(sizeof(Header)));
-    SuccessOrExit(error = QSectionMsg->SetLength(sizeof(Header)));
-    SuccessOrExit(error = AuthSectionMsg->SetLength(sizeof(Header)));
 
     // Setup initial DNS response header
     header.SetType(Header::kTypeQuery);
 
-    if (!mIsHostVerifiedUnique && !aUpdate->GetId())
+    if (!mIsHostVerifiedUnique && !aProber->GetId())
     {
         // Hostname
-        SuccessOrExit(error = Get<Server>().AppendHostName(*QSectionMsg, GetHostName(), compressInfo));
-        QSectionMsg->Append(question);
+        SuccessOrExit(error = Get<Server>().AppendHostName(*message, GetHostName(), compressInfo));
+        message->Append(question);
         header.SetQuestionCount(header.GetQuestionCount() + 1);
 
+    }
+
+    if (!numIds && aProber->GetId())
+    {
+        service = mServices.FindMatching(aProber->GetId());
+        if (service != nullptr)
+        {
+            SuccessOrExit(error =
+                              Get<Server>().AppendInstanceName(*message, service->GetInstanceName(), compressInfo));
+            message->Append(question);
+            header.SetQuestionCount(header.GetQuestionCount() + 1);
+        }
+    }
+    else
+    {
+        for (uint8_t i = 0; i < numIds; i++)
+        {
+            service = mServices.FindMatching(ids[i]);
+            if (service != nullptr)
+            {
+                SuccessOrExit(
+                    error = Get<Server>().AppendInstanceName(*message, service->GetInstanceName(), compressInfo));
+                message->Append(question);
+                header.SetQuestionCount(header.GetQuestionCount() + 1);
+            }
+        }
+    }
+    if (!mIsHostVerifiedUnique && !aProber->GetId())
+    {
         // AAAA Resource Record
         for (uint8_t i = 0; i < addrNum; i++)
         {
-            SuccessOrExit(error = Get<Server>().AppendAaaaRecord(*AuthSectionMsg, GetHostName(), addrs[i], hostTtl,
+            SuccessOrExit(error = Get<Server>().AppendAaaaRecord(*message, GetHostName(), addrs[i], hostTtl,
                                                                  compressInfo));
             header.SetAuthorityRecordCount(header.GetAuthorityRecordCount() + 1);
         }
     }
 
-    if (aUpdate->GetServiceList().IsEmpty() && aUpdate->GetId())
+    if (!numIds && aProber->GetId())
     {
-        service = mServices.FindMatching(aUpdate->GetId());
+        service = mServices.FindMatching(aProber->GetId());
         if (service != nullptr)
         {
-            SuccessOrExit(error =
-                              Get<Server>().AppendInstanceName(*QSectionMsg, service->GetInstanceName(), compressInfo));
-            QSectionMsg->Append(question);
-            header.SetQuestionCount(header.GetQuestionCount() + 1);
-
             SuccessOrExit(error = Get<Server>().AppendSrvRecord(
-                              *AuthSectionMsg, service->GetInstanceName(), GetHostName(), service->GetTtl(),
+                              *message, service->GetInstanceName(), GetHostName(), service->GetTtl(),
                               service->GetPriority(), service->GetWeight(), service->GetPort(), compressInfo));
             header.SetAuthorityRecordCount(header.GetAuthorityRecordCount() + 1);
 
@@ -2059,41 +2006,21 @@ Message *MdnsServer::CreateHostAndServicesPublishMessage(OutstandingUpdate *aUpd
     }
     else
     {
-        for (service = aUpdate->GetServiceList().GetHead(); service != nullptr; service = next)
+        for (uint8_t i = 0; i < numIds; i++)
         {
-            next = service->GetNext();
-
-            SuccessOrExit(error =
-                              Get<Server>().AppendInstanceName(*QSectionMsg, service->GetInstanceName(), compressInfo));
-            QSectionMsg->Append(question);
-            header.SetQuestionCount(header.GetQuestionCount() + 1);
-
-            SuccessOrExit(error = Get<Server>().AppendSrvRecord(
-                              *AuthSectionMsg, service->GetInstanceName(), GetHostName(), service->GetTtl(),
-                              service->GetPriority(), service->GetWeight(), service->GetPort(), compressInfo));
-            header.SetAuthorityRecordCount(header.GetAuthorityRecordCount() + 1);
-            service->SetState(Service::kProbing);
+            service = mServices.FindMatching(ids[i]);
+            if (service != nullptr)
+            {
+                SuccessOrExit(error = Get<Server>().AppendSrvRecord(
+                                  *message, service->GetInstanceName(), GetHostName(), service->GetTtl(),
+                                  service->GetPriority(), service->GetWeight(), service->GetPort(), compressInfo));
+                header.SetAuthorityRecordCount(header.GetAuthorityRecordCount() + 1);
+                service->SetState(Service::kProbing);
+            }
         }
-    }
-
-    if (header.GetQuestionCount())
-    {
-        SuccessOrExit(error = message->AppendBytesFromMessage(*QSectionMsg, sizeof(Header),
-                                                              (QSectionMsg->GetLength() - sizeof(Header)) -
-                                                                  QSectionMsg->GetOffset()));
-    }
-
-    if (header.GetAuthorityRecordCount())
-    {
-        SuccessOrExit(error = message->AppendBytesFromMessage(*AuthSectionMsg, sizeof(Header),
-                                                              (AuthSectionMsg->GetLength() - sizeof(Header)) -
-                                                                  AuthSectionMsg->GetOffset()));
     }
     header.SetResponseCode(Header::kResponseSuccess);
     message->Write(0, header);
-
-    QSectionMsg->Free();
-    AuthSectionMsg->Free();
 
     return message;
 
@@ -2101,134 +2028,136 @@ exit:
     return nullptr;
 }
 
-Error MdnsServer::PublishHostAndServices(OutstandingUpdate *aUpdate)
+Error MdnsServer::PublishHostAndServices(Prober *aProber)
 {
     Error error = kErrorNone;
 
-    Message *message = CreateHostAndServicesPublishMessage(aUpdate);
+    Message *message = CreateHostAndServicesPublishMessage(aProber);
     VerifyOrExit(message != nullptr, error = kErrorNoBufs);
     VerifyOrExit(message->GetLength() != sizeof(Header), error = kErrorFailed);
 
-    Get<MdnsServer::Prober>().EnqueueProbeMessage(*message);
-    Get<MdnsServer::Prober>().StartProbing(true);
+    aProber->EnqueueProbeMessage(*message);
+    aProber->StartProbing(aProber->IsProbingForHost());
 
 exit:
+    if(error != kErrorNone)
+    {
+        RemoveProbingInstance(aProber->GetId());
+    }
     FreeMessageOnError(message, error);
     return error;
 }
 
-
-//---------------------------------------------------------------------------------------------------------------------
-// Announcer
-
-MdnsServer::Announcer::Announcer(Instance &aInstance)
-    : InstanceLocator(aInstance)
-    , mTxCount(0)
-    , mTimer(aInstance)
-    , mState(Announcer::kIdle)
+Error MdnsServer::AnnounceHostAndServices(Prober &aProber)
 {
-}
+    Error      error     = kErrorNone;
+    Message   *message   = nullptr;
+    const uint32_t      *ids;
+    uint8_t              numIds  = 0;
+    Announcer *announcer = AllocateAnnouncer(aProber.GetId());
+    VerifyOrExit(announcer != nullptr, error = kErrorNoBufs);
 
-void MdnsServer::Announcer::StartAnnouncing()
-{
-    VerifyOrExit(!mTimer.IsRunning());
-    mTxCount = 0;
-    mTimer.Start(0);
-exit:
-    return;
-}
-
-
-void MdnsServer::Announcer::HandleTimer(void)
-{
-    Error            error        = kErrorNone;
-    Message         *announcement = mAnnouncements.GetHead();
-    Message         *message      = nullptr;
-    Ip6::MessageInfo rspMsgInfo;
-
-    VerifyOrExit(!mTimer.IsRunning());
-
-    if (mTxCount >= kMaxTxCount)
+    if (!aProber.GetId())
     {
-        mTimer.Stop();
-        Get<MdnsServer::Announcer>().SetState(Announcer::kAnnounced);
-        mAnnouncements.DequeueAndFreeAll();
-
-        Get<MdnsServer>().HandleAnnouncerFinished();
-
-        ExitNow();
-    }
-
-    rspMsgInfo.SetPeerAddr(AsCoreType(&kMdnsMulticastGroup));
-    rspMsgInfo.SetPeerPort(kPort);
-    rspMsgInfo.SetSockPort(kPort);
-    rspMsgInfo.SetIsHostInterface(true);
-
-    VerifyOrExit((message = Get<MdnsServer>().GetMcastSocket().NewMessage(0)) != nullptr, error = kErrorNoBufs);
-
-    SuccessOrExit(error = message->AppendBytesFromMessage(*announcement, 0,
-                                                          announcement->GetLength() - announcement->GetOffset()));
-
-    error = Get<MdnsServer>().GetMcastSocket().SendTo(*message, rspMsgInfo);
-    if (error == kErrorNone)
-    {
-        mTxCount++;
-        mTimer.Start(kTxAnnounceInterval);
+        ids = aProber.GetServicesIdList(numIds);
+        for (uint8_t i = 0; i < numIds; i++)
+        {
+            announcer->PushServiceId(ids[i]);
+        }
     }
     else
     {
-        Get<MdnsServer::Announcer>().SetState(Announcer::kIdle);
-        mTxCount = 0;
-        ExitNow();
+        announcer->PushServiceId(aProber.GetId());
     }
+
+    message = CreateHostAndServicesAnnounceMessage(*announcer);
+    VerifyOrExit(message != nullptr, error = kErrorNoBufs);
+    VerifyOrExit(message->GetLength() != sizeof(Header), error = kErrorFailed);
+
+    announcer->EnqueueAnnounceMessage(*message);
+    announcer->StartAnnouncing();
 
 exit:
-    return;
-}
-
-void MdnsServer::Announcer::Stop(void)
-{
-    mTimer.Stop();
-    SetState(kIdle);
-    mAnnouncements.DequeueAndFreeAll();
-}
-
-//---------------------------------------------------------------------------------------------------------------------
-// OutstandingUpdate
-Error MdnsServer::OutstandingUpdate::Init(uint32_t aId, otSrpServerHost *aHost, Type aType)
-{
-    mId    = aId;
-    if(aHost != nullptr)
+    if (error != kErrorNone)
     {
-         mHost  = aHost;
-         mHostName.Set(AsCoreType(aHost).GetFullName());
+        if (announcer)
+        {
+            RemoveAnnouncingInstance(announcer->GetId());
+        }
     }
-    mType  = aType;
-    mState = kStateIdle;
+    return error;
+}
 
-    return kErrorNone;
+Error MdnsServer::AnnounceHostAndServices(Announcer &aAnnouncer)
+{
+    Error      error     = kErrorNone;
+    Message   *message   = nullptr;
+
+    message = CreateHostAndServicesAnnounceMessage(aAnnouncer);
+    VerifyOrExit(message != nullptr, error = kErrorNoBufs);
+    VerifyOrExit(message->GetLength() != sizeof(Header), error = kErrorFailed);
+
+    aAnnouncer.EnqueueAnnounceMessage(*message);
+    aAnnouncer.StartAnnouncing();
+
+exit:
+    if(error != kErrorNone)
+    {
+        RemoveAnnouncingInstance(aAnnouncer.GetId());
+    }
+    return error;
+}
+
+void MdnsServer::RemoveProbingInstance(uint32_t aProbingInstanceId)
+{
+    for (Prober &p : mProbingInstances)
+    {
+        if (p.GetId() == aProbingInstanceId)
+        {
+            mProbingInstances.Remove(p);
+            p.Free();
+        }
+    }
+}
+
+void MdnsServer::RemoveAnnouncingInstance(uint32_t aAnnouncingInstanceId)
+{
+    for (Announcer &a : mAnnouncingInstances)
+    {
+        if (a.GetId() == aAnnouncingInstanceId)
+        {
+            mAnnouncingInstances.Remove(a);
+            a.Free();
+        }
+    }
 }
 
 //---------------------------------------------------------------------------------------------------------------------
-// Prober
-
-MdnsServer::Prober::Prober(Instance &aInstance)
+//Prober
+MdnsServer::Prober::Prober(Instance &aInstance, bool aProbeForHost, const otSrpServerHost *aHost, uint32_t aId)
     : InstanceLocator(aInstance)
-    , mTxCount(0)
-    , mTimer(aInstance)
-    , mState(Prober::kIdle)
-    , mConflictsCount(0)
-    , mProbeRateLimit(false)
-
+    , mTimer(aInstance, HandleTimer, this)
+    , mState(Prober::State::kIdle)
+    , mProbeForHost(aProbeForHost)
+    , mId(aId)
 {
-    memset(mTimeOfConflict, 0, sizeof(mTimeOfConflict));
+    if(!aProbeForHost)
+    {
+        mHost = aHost;
+    }
+    else
+    {
+        mHost = nullptr;
+    }
 }
 
 void MdnsServer::Prober::StartProbing(bool aIsFromHost)
 {
     uint32_t delay;
     mProbeForHost = aIsFromHost;
-    VerifyOrExit(!IsInProgress());
+    VerifyOrExit(!IsRunning());
+
+    mIsRunning = true;
 
     delay    = Random::NonCrypto::GetUint32InRange(0, kMaxStartDelay);
     mTxCount = 0;
@@ -2250,28 +2179,24 @@ void MdnsServer::Prober::RestartProbing(uint32_t aDelay)
     mTimer.Start(aDelay);
 }
 
-void MdnsServer::Prober::Stop(Error aError)
+void MdnsServer::Prober::Stop(Error aError, MdnsServerProbingContext *aContext)
 {
     mTimer.Stop();
     SetState(kIdle);
-    if(aError != kErrorNone)
-    {
-        Message *message = mQueries.GetHead();
-        if (message != nullptr)
-        {
-            mQueries.DequeueAndFree(*message);
-        }
-    }
-    Get<MdnsServer>().HandleProberFinished(aError);
+    mIsRunning = false;
+    Message *message = GetProbingMessage();
+    mQueries.DequeueAndFree(*message);
+    Get<MdnsServer>().HandleProberFinished(*this, aError, aContext);
 }
 
 void MdnsServer::Prober::HandleTimer(void)
 {
     Error            error = kErrorNone;
     uint32_t         delay;
-    Message         *query = mQueries.GetHead();
     Ip6::MessageInfo rspMsgInfo;
     Message         *probeRequest = nullptr;
+    Message         *query        = GetProbingMessage();
+    VerifyOrExit (query != nullptr, error = kErrorFailed);
 
     VerifyOrExit(!mTimer.IsRunning());
 
@@ -2279,8 +2204,9 @@ void MdnsServer::Prober::HandleTimer(void)
     {
         mTimer.Stop();
         SetState(kCompleted);
-        Get<MdnsServer>().HandleProberFinished(kErrorNone);
         mQueries.DequeueAndFree(*query);
+        Get<MdnsServer>().HandleProberFinished(*this, kErrorNone);
+        Get<MdnsServer>().RemoveProbingInstance(GetId());
         ExitNow();
     }
 
@@ -2306,7 +2232,7 @@ void MdnsServer::Prober::HandleTimer(void)
     else
     {
         Stop(kErrorAbort);
-        mQueries.DequeueAndFree(*query);
+        Get<MdnsServer>().RemoveProbingInstance(GetId());
         ExitNow();
     }
 
@@ -2397,7 +2323,7 @@ int MdnsServer::Prober::CompareResourceRecords(Message &aEntry1, Message &aEntry
 void MdnsServer::Prober::ProcessQuery(const Header &aRequestHeader, Message &aRequestMessage)
 {
     uint16_t ownReadOffset = sizeof(Header);
-    Message *ownMessage    = mQueries.GetHead();
+    Message *ownMessage    = GetProbingMessage();
     Header   ownHeader;
     ownMessage->Read(ownMessage->GetOffset(), ownHeader);
 
@@ -2408,10 +2334,8 @@ void MdnsServer::Prober::ProcessQuery(const Header &aRequestHeader, Message &aRe
 
     while (aNumQuestions > 0)
     {
-        ResourceRecord record;
         Name::ReadName(*ownMessage, ownReadOffset, ownName, sizeof(ownName));
-        record.ReadFrom(*ownMessage, ownReadOffset);
-        ownReadOffset += static_cast<uint16_t>(record.GetSize());
+        ownReadOffset += sizeof(Question);
 
         aNumQuestions--;
         conflictingName.Clear();
@@ -2444,10 +2368,9 @@ void MdnsServer::Prober::ProcessQuery(const Header &aRequestHeader, Message &aRe
 
 void MdnsServer::Prober::ProcessResponse(const Header &aRequestHeader, Message &aRequestMessage)
 {
-    OT_UNUSED_VARIABLE(aRequestHeader);
     uint16_t offset        = aRequestMessage.GetOffset() + sizeof(Header);
     uint16_t ownReadOffset = sizeof(Header);
-    Message *ownMessage    = mQueries.GetHead();
+    Message *ownMessage    = GetProbingMessage();
     Header   ownHeader;
     ownMessage->Read(ownMessage->GetOffset(), ownHeader);
 
@@ -2459,21 +2382,23 @@ void MdnsServer::Prober::ProcessResponse(const Header &aRequestHeader, Message &
 
     while (aNumQuestions > 0)
     {
-        ResourceRecord record;
         Name::ReadName(*ownMessage, ownReadOffset, ownName, sizeof(ownName));
-        record.ReadFrom(*ownMessage, ownReadOffset);
-        ownReadOffset += static_cast<uint16_t>(record.GetSize());
+        ownReadOffset += sizeof(Question);
 
         aNumQuestions--;
+
+        tmpOffset = aRequestMessage.GetOffset() + sizeof(Header);
 
         for (uint16_t i = 0; i < aRequestHeader.GetAnswerCount(); i++)
         {
             offset      = tmpOffset;
-            Error error = Name::CompareName(aRequestMessage, offset, ownName);\
+            Error error = Name::CompareName(aRequestMessage, offset, ownName);
             // A match is signaled by kErrorNone
             if (error == kErrorNone)
             {
-                Stop(kErrorDuplicated);
+                MdnsServerProbingContext *context = static_cast<MdnsServerProbingContext *>(Heap::CAlloc(1, sizeof(MdnsServerProbingContext)));
+                memcpy(context->name, ownName, sizeof(ownName));
+                Stop(kErrorDuplicated, context);
                 conflictFound = true;
                 ProcessProbeConflict();
                 break;
@@ -2488,10 +2413,10 @@ void MdnsServer::Prober::ProcessResponse(const Header &aRequestHeader, Message &
 }
 
 int MdnsServer::Prober::PerformTiebreak(const Header &aOwnHeader,
-                                             Message      &aOwnMessage,
-                                             const Header &aIncomingHeader,
-                                             Message      &aIncomingMessage,
-                                             Name         &aConflictingName)
+                                        Message      &aOwnMessage,
+                                        const Header &aIncomingHeader,
+                                        Message      &aIncomingMessage,
+                                        Name         &aConflictingName)
 
 {
     uint16_t incomingNumRecords = aIncomingHeader.GetAuthorityRecordCount();
@@ -2509,11 +2434,10 @@ int MdnsServer::Prober::PerformTiebreak(const Header &aOwnHeader,
                  kErrorNotFound);
 
     // we should now iterate over the incoming authoritative section and get all RR with that name;
-    Get<MdnsServer::Prober>().AddRecordOffsetsFromAuthoritativeSection(
-        aIncomingHeader, aIncomingMessage, aConflictingName, mIncomingTiebreakingRecords);
+    AddRecordOffsetsFromAuthoritativeSection(aIncomingHeader, aIncomingMessage, aConflictingName,
+                                             mIncomingTiebreakingRecords);
     // we should also iterate over our authoritative section and get all RR with that name;
-    Get<MdnsServer::Prober>().AddRecordOffsetsFromAuthoritativeSection(aOwnHeader, aOwnMessage, aConflictingName,
-                                                                            mOwnTiebreakingRecords);
+    AddRecordOffsetsFromAuthoritativeSection(aOwnHeader, aOwnMessage, aConflictingName, mOwnTiebreakingRecords);
 
     ownHead      = mOwnTiebreakingRecords.GetHead();
     incomingHead = mIncomingTiebreakingRecords.GetHead();
@@ -2631,294 +2555,12 @@ void MdnsServer::Prober::AddRecordOffsetsFromAuthoritativeSection(const Header  
 exit:
     return;
 }
-void MdnsServer::SrpAdvertisingProxyHandler(otSrpServerServiceUpdateId aId,
-                                       const otSrpServerHost     *aHost,
-                                       uint32_t                   aTimeout,
-                                       void                      *aContext)
+
+const uint32_t *MdnsServer::Prober::GetServicesIdList(uint8_t &aNumServices) const
 {
-    static_cast<MdnsServer *>(aContext)->SrpAdvertisingProxyHandler(aId, aHost, aTimeout);
-}
-void MdnsServer::SrpAdvertisingProxyHandler(otSrpServerServiceUpdateId aId, const otSrpServerHost *aHost, uint32_t aTimeout)
-{
-    OT_UNUSED_VARIABLE(aTimeout);
+    aNumServices = ClampToUint8(mServicesIdList.GetLength());
 
-    OutstandingUpdate          *update  = nullptr;
-    const Srp::Server::Service *service = nullptr;
-
-    if (!AsCoreType(aHost).IsDeleted())
-    {
-        while ((service = AsCoreType(aHost).FindNextService(service, OT_SRP_SERVER_FLAGS_BASE_TYPE_SERVICE_ONLY,
-                                                            nullptr, nullptr)) != nullptr)
-        {
-            if(service->IsDeleted())
-            {
-                update = OutstandingUpdate::AllocateAndInit(aId, AsNonConst(aHost), OutstandingUpdate::kTypeSrpServiceRemoved);
-                VerifyOrExit(update != nullptr);
-                update->SetService(service);
-                break;
-            }
-        }
-        update = OutstandingUpdate::AllocateAndInit(aId, AsNonConst(aHost), OutstandingUpdate::kTypeProbeAndAnnounce);
-        VerifyOrExit(update != nullptr);
-    }
-    else
-    {
-        // try to handle srp disable case
-        if(Get<Srp::Server>().GetState() == Srp::Server::State::kStateStopped)
-        {
-            AnnounceSrpHostGoodbye(aHost);
-        }
-        else
-        {
-            // First, remove all possible existing outstanding updates for this host
-            OutstandingUpdate *tmpUpdate = mOutstandingUpdates.GetHead();
-
-            for (; tmpUpdate != nullptr; tmpUpdate = tmpUpdate->GetNext())
-            {
-                if (tmpUpdate->GetHost() == aHost)
-                {
-                    mOutstandingUpdates.Remove(*tmpUpdate);
-                    tmpUpdate->Free();
-                }
-            }
-
-        update = OutstandingUpdate::AllocateAndInit(aId, AsNonConst(aHost), OutstandingUpdate::kTypeSrpHostGoodbyeAnnouncement);
-        VerifyOrExit(update != nullptr);
-        }
-    }
-
-    if (!mOutstandingUpdates.ContainsMatching(update->GetId()))
-    {
-        mOutstandingUpdates.Push(*update);
-        mMdnsOustandingUpdate.Post();
-    }
-    else
-    {
-        update->Free();
-    }
-exit:
-    return;
-}
-
-Message* MdnsServer::CreateSrpPublishMessage(const otSrpServerHost *aHost)
-{
-    Error                    error = kErrorNone;
-    NameCompressInfo         compressInfo(kDefaultDomainName);
-    char                     name[Name::kMaxNameSize];
-
-    uint8_t             addrNum;
-    const Ip6::Address *addrs   = AsCoreType(aHost).GetAddresses(addrNum);
-    uint32_t            hostTtl = TimeMilli::MsecToSec(AsCoreType(aHost).GetExpireTime() - TimerMilli::GetNow());
-    const Srp::Server::Service *service = nullptr;
-
-    Header header;
-
-    Message *message        = nullptr;
-    Question question(ResourceRecord::kTypeAny, ResourceRecord::kClassInternet);
-
-    bool                   shouldPublishHost = true;
-    const otSrpServerHost *host              = nullptr;
-
-    VerifyOrExit((message = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
-
-    question.SetQuQuestion();
-
-    // Allocate space for DNS header
-    SuccessOrExit(error = message->SetLength(sizeof(Header)));
-
-    // Setup initial DNS response header
-    header.SetType(Header::kTypeQuery);
-
-    ConvertDomainName(name, AsCoreType(aHost).GetFullName(), kThreadDefaultDomainName, kDefaultDomainName);
-
-    // Hostname
-    while ((host = Get<Srp::Server>().GetNextHost(AsCoreTypePtr(host))) != nullptr)
-    {
-        if (!strcmp(AsCoreType(aHost).GetFullName(), AsCoreType(host).GetFullName()))
-        {
-            shouldPublishHost = false;
-            break;
-        }
-    }
-
-    if (shouldPublishHost)
-    {
-        // Hostname
-        SuccessOrExit(error =
-                          Get<Server>().AppendHostName(*message, name, compressInfo));
-        message->Append(question);
-        header.SetQuestionCount(header.GetQuestionCount() + 1);
-    }
-
-    while ((service = AsCoreType(aHost).FindNextService(service, OT_SRP_SERVER_FLAGS_BASE_TYPE_SERVICE_ONLY, nullptr,
-                                                        nullptr)) != nullptr)
-    {
-        char serviceName[Name::kMaxNameSize] = {0};
-
-        if (!service->IsDeleted())
-        {
-            ConvertDomainName(serviceName, service->GetInstanceName(), kThreadDefaultDomainName, kDefaultDomainName);
-            SuccessOrExit(error =
-                              Get<Server>().AppendInstanceName(*message, serviceName, compressInfo));
-            message->Append(question);
-            header.SetQuestionCount(header.GetQuestionCount() + 1);
-        }
-    }
-
-    if (shouldPublishHost)
-    {
-        // AAAA Resource Record
-        for (uint8_t i = 0; i < addrNum; i++)
-        {
-            SuccessOrExit(error = Get<Server>().AppendAaaaRecord(*message, name,
-                                                                 addrs[i], hostTtl, compressInfo));
-            header.SetAuthorityRecordCount(header.GetAuthorityRecordCount() + 1);
-        }
-    }
-
-    while ((service = AsCoreType(aHost).FindNextService(service, OT_SRP_SERVER_FLAGS_BASE_TYPE_SERVICE_ONLY, nullptr,
-                                                        nullptr)) != nullptr)
-    {
-        char serviceName[Name::kMaxNameSize] = {0};
-
-        if (!service->IsDeleted())
-        {
-            ConvertDomainName(serviceName, service->GetInstanceName(), kThreadDefaultDomainName, kDefaultDomainName);
-            SuccessOrExit(error = Get<Server>().AppendSrvRecord(*message, serviceName,
-                                                                name, service->GetTtl(),
-                                                                service->GetPriority(), service->GetWeight(),
-                                                                service->GetPort(), compressInfo));
-            header.SetAuthorityRecordCount(header.GetAuthorityRecordCount() + 1);
-        }
-    }
-
-    header.SetResponseCode(Header::kResponseSuccess);
-    message->Write(0, header);
-
-    return message;
-
-exit:
-    return nullptr;
-}
-bool MdnsServer::AddressIsFromLocalSubnet(const Ip6::Address &srcAddr)
-{
-    const Ip6::Address *addresses;
-    uint8_t             numAddresses = 0;
-
-    addresses = GetAddresses(numAddresses);
-
-    for (uint8_t i = 0; i < numAddresses; i++)
-    {
-        if (otIp6PrefixMatch(reinterpret_cast<const otIp6Address *>(&srcAddr), reinterpret_cast<const otIp6Address *>(&addresses[i])))
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-Message* MdnsServer::CreateSrpAnnounceMessage(const char *aHostName)
-{
-    Error            error = kErrorNone;
-    NameCompressInfo compressInfo(kDefaultDomainName);
-    char             name[Name::kMaxNameSize];
-
-    uint8_t                     addrNum;
-    const Ip6::Address         *addrs;
-    uint32_t                    hostTtl;
-    const Srp::Server::Service *service = nullptr;
-
-    Message *message = nullptr;
-    Header   header;
-
-    const otSrpServerHost *host = nullptr;
-
-    while ((host = otSrpServerGetNextHost(reinterpret_cast<otInstance *>(&InstanceLocator::GetInstance()), host)) !=
-           nullptr)
-    {
-        if (StringMatch(AsCoreType(host).GetFullName(), aHostName, kStringCaseInsensitiveMatch))
-        {
-            break;
-        }
-    }
-
-    VerifyOrExit(host != nullptr, error = kErrorAbort);
-
-    addrs   = AsCoreType(host).GetAddresses(addrNum);
-    hostTtl = TimeMilli::MsecToSec(AsCoreType(host).GetExpireTime() - TimerMilli::GetNow());
-
-    VerifyOrExit((message = mSocket.NewMessage(0)) != nullptr, error = kErrorNoBufs);
-    SuccessOrExit(error = message->SetLength(sizeof(Header)));
-
-    header.SetType(Header::kTypeResponse);
-
-    Get<MdnsServer>().ConvertDomainName(name, AsCoreType(host).GetFullName(), kThreadDefaultDomainName, kDefaultDomainName);
-
-    // AAAA Resource Record
-    for (uint8_t i = 0; i < addrNum; i++)
-    {
-        SuccessOrExit(error = Get<Server>().AppendAaaaRecord(*message, name, addrs[i],
-                                                             hostTtl, compressInfo, true));
-        Server::IncResourceRecordCount(header, false);
-    }
-
-    while ((service = AsCoreType(host).FindNextService(service, OT_SRP_SERVER_FLAGS_BASE_TYPE_SERVICE_ONLY, nullptr,
-                                                        nullptr)) != nullptr)
-    {
-        char serviceName[Name::kMaxNameSize] = {0};
-
-         Get<MdnsServer>().ConvertDomainName(serviceName, service->GetInstanceName(), kThreadDefaultDomainName, kDefaultDomainName);
-
-        SuccessOrExit(error = Get<Server>().AppendSrvRecord(
-                          *message, serviceName, name, service->GetTtl(),
-                          service->GetPriority(), service->GetWeight(), service->GetPort(), compressInfo, true));
-        Server::IncResourceRecordCount(header, false);
-
-        SuccessOrExit(error =
-                          Get<Server>().AppendPtrRecord(*message, service->GetServiceName(), service->GetInstanceName(),
-                                                        service->GetTtl(), compressInfo));
-        Server::IncResourceRecordCount(header, false);
-
-        SuccessOrExit(error =
-                          Get<Server>().AppendTxtRecord(*message, service->GetInstanceName(), service->GetTxtData(),
-                                                        service->GetTxtDataLength(), service->GetTtl(), compressInfo, true));
-
-        Server::IncResourceRecordCount(header, false);
-    }
-
-    message->Write(0, header);
-
-    return message;
-
-exit:
-    FreeMessageOnError(message, error);
-    return nullptr;
-}
-
-Error MdnsServer::PublishFromSrp(const otSrpServerHost *aHost)
-{
-    Error error = kErrorNone;
-
-    Message *message = CreateSrpPublishMessage(aHost);
-    OutstandingUpdate *update = mOutstandingUpdates.GetHead();
-    VerifyOrExit(update != nullptr, error = kErrorFailed);
-    VerifyOrExit(message != nullptr, error = kErrorNoBufs);
-
-    if (message->GetLength() == sizeof(Header))
-    {
-        Get<Srp::Server>().HandleServiceUpdateResult(mOutstandingUpdates.GetHead()->GetId(), kErrorNone);
-        mOutstandingUpdates.Remove(*update);
-        update->Free();
-        ExitNow();
-    }
-
-    Get<MdnsServer::Prober>().EnqueueProbeMessage(*message);
-    Get<MdnsServer::Prober>().StartProbing(false);
-
-exit:
-    FreeMessageOnError(message, error);
-    return error;
+    return mServicesIdList.AsCArray();
 }
 
 uint16_t MdnsServer::Prober::ReturnAuthoritativeOffsetFromQueryMessage(const Header  &aHeader,
@@ -2983,6 +2625,823 @@ void MdnsServer::Prober::ProcessProbeConflict(void)
         }
     }
 }
+
+void MdnsServer::Prober::HandleTimer(Timer &aTimer)
+{
+    static_cast<MdnsServer::Prober *>(static_cast<TimerMilliContext &>(aTimer).GetContext())->HandleTimer();
+}
+
+//---------------------------------------------------------------------------------------------------------------------
+// Announcer
+
+MdnsServer::Announcer::Announcer(Instance &aInstance, uint32_t aId)
+    : InstanceLocator(aInstance)
+    , mId(aId)
+    , mTimer(aInstance, HandleTimer, this)
+    , mTxCount(0)
+    , mState(Announcer::kIdle)
+{
+}
+
+MdnsServer::Announcer::Announcer(Instance &aInstance)
+    : InstanceLocator(aInstance)
+    , mTimer(aInstance, HandleTimer, this)
+    , mTxCount(0)
+    , mState(Announcer::kIdle)
+{
+}
+
+void MdnsServer::Announcer::StartAnnouncing()
+{
+    VerifyOrExit(!mTimer.IsRunning());
+    mTxCount = 0;
+    mTimer.Start(0);
+exit:
+    return;
+}
+
+void MdnsServer::Announcer::HandleTimer(Timer &aTimer)
+{
+    static_cast<MdnsServer::Announcer *>(static_cast<TimerMilliContext &>(aTimer).GetContext())->HandleTimer();
+}
+
+void MdnsServer::Announcer::HandleTimer(void)
+{
+    Error            error        = kErrorNone;
+    Message         *announcement = mAnnouncements.GetHead();
+    Message         *message      = nullptr;
+    Ip6::MessageInfo rspMsgInfo;
+
+    VerifyOrExit(!mTimer.IsRunning());
+
+    if (mTxCount >= kMaxTxCount)
+    {
+        mTimer.Stop();
+        SetState(Announcer::kAnnounced);
+        mAnnouncements.Dequeue(*announcement);
+        Get<MdnsServer>().HandleAnnouncerFinished(*this);
+        Get<MdnsServer>().RemoveAnnouncingInstance(GetId());
+        ExitNow();
+    }
+
+    rspMsgInfo.SetPeerAddr(AsCoreType(&kMdnsMulticastGroup));
+    rspMsgInfo.SetPeerPort(kPort);
+    rspMsgInfo.SetSockPort(kPort);
+    rspMsgInfo.SetIsHostInterface(true);
+
+    VerifyOrExit((message = Get<MdnsServer>().GetMcastSocket().NewMessage(0)) != nullptr, error = kErrorNoBufs);
+
+    SuccessOrExit(error = message->AppendBytesFromMessage(*announcement, 0,
+                                                          announcement->GetLength() - announcement->GetOffset()));
+
+    error = Get<MdnsServer>().GetMcastSocket().SendTo(*message, rspMsgInfo);
+    if (error == kErrorNone)
+    {
+        mTxCount++;
+        mTimer.Start(kTxAnnounceInterval);
+    }
+    else
+    {
+        Stop();
+        Get<MdnsServer>().RemoveAnnouncingInstance(GetId());
+        ExitNow();
+    }
+
+exit:
+    return;
+}
+
+void MdnsServer::Announcer::Stop(void)
+{
+    mTimer.Stop();
+    SetState(kIdle);
+    Message *message = mAnnouncements.GetHead();
+    mAnnouncements.DequeueAndFree(*message);
+    }
+
+const uint32_t *MdnsServer::Announcer::GetServicesIdList(uint8_t &aNumServices) const
+{
+    aNumServices = ClampToUint8(mServicesIdList.GetLength());
+
+    return mServicesIdList.AsCArray();
+}
+
+void MdnsServer::SrpAdvertisingProxyHandler(otSrpServerServiceUpdateId aId,
+                                       const otSrpServerHost     *aHost,
+                                       uint32_t                   aTimeout,
+                                       void                      *aContext)
+{
+    static_cast<MdnsServer *>(aContext)->SrpAdvertisingProxyHandler(aId, aHost, aTimeout);
+}
+void MdnsServer::SrpAdvertisingProxyHandler(otSrpServerServiceUpdateId aId, const otSrpServerHost *aHost, uint32_t aTimeout)
+{
+    OT_UNUSED_VARIABLE(aTimeout);
+
+    if (!AsCoreType(aHost).IsDeleted())
+    {
+        // Determine what should be done - probing for new services or announce for updates
+        HandleSrpAdvertisingProxy(aId, aHost);
+    }
+    else
+    {
+        // try to handle srp disable case
+        if(Get<Srp::Server>().GetState() == Srp::Server::State::kStateStopped)
+        {
+            AnnounceSrpHostGoodbye(aId, aHost);
+        }
+        else
+        {
+            // First, remove all possible existing entities for this host
+
+            for (Prober &p : mProbingInstances)
+            {
+                if (p.GetHost() == aHost)
+                {
+                    RemoveProbingInstance(p.GetId());
+                }
+            }
+
+            AnnounceSrpHostGoodbye(aId, aHost);
+            Get<Srp::Server>().HandleServiceUpdateResult(aId, kErrorNone);
+        }
+    }
+//exit:
+  //  return;
+}
+
+void MdnsServer::HandleSrpAdvertisingProxy(otSrpServerServiceUpdateId aId, const otSrpServerHost *aHost)
+{
+    const Srp::Server::Host *host             = nullptr;
+    LinkedList<SrpAdvertisingServiceInfo> servicesMarkedForProbing;
+    LinkedList<SrpAdvertisingServiceInfo> servicesMarkedForAnnounce;
+    bool verifyUniqueness = false;
+
+    while ((host = Get<Srp::Server>().GetNextHost(host)) != nullptr)
+    {
+        if (StringMatch(host->GetFullName(), AsCoreType(aHost).GetFullName(), kStringCaseInsensitiveMatch))
+        {
+            break;
+        }
+    }
+
+    if(host == nullptr)
+    {
+        Prober *prober = AllocateProber(false, aHost, aId);
+        VerifyOrExit(prober != nullptr);
+        PublishFromSrp(aHost, prober);
+        ExitNow();
+    }
+    else
+    {
+        LinkedList<Srp::Server::Service> services = AsCoreType(aHost).GetServices();
+        if (!services.IsEmpty())
+        {
+            for (Srp::Server::Service &s : services)
+            {
+                SrpAdvertisingServiceInfo *info =
+                    SrpAdvertisingServiceInfo::AllocateAndInit(s.GetServiceName(), s.GetInstanceName());
+                if(!s.IsDeleted())
+                {
+                    if (host->FindService(s.GetServiceName(), s.GetInstanceName()) == nullptr)
+                    {
+                        servicesMarkedForProbing.Push(*info);
+                    }
+                    else // updates and removals
+                    {
+                        servicesMarkedForAnnounce.Push(*info);
+                    }
+                }
+            }
+            if(!servicesMarkedForProbing.IsEmpty())
+            {
+                verifyUniqueness = true;
+                Prober *prober = AllocateProber(false, aHost, aId);
+                VerifyOrExit(prober != nullptr);
+                PublishFromSrp(aHost, prober, servicesMarkedForProbing);
+                for(SrpAdvertisingServiceInfo &si : servicesMarkedForProbing)
+                {
+                    servicesMarkedForProbing.Remove(si);
+                    si.Free();
+                }
+            }
+            if(!servicesMarkedForAnnounce.IsEmpty())
+            {
+                AnnounceFromSrp(aHost, servicesMarkedForAnnounce);
+                for(SrpAdvertisingServiceInfo &si : servicesMarkedForAnnounce)
+                {
+                    servicesMarkedForAnnounce.Remove(si);
+                    si.Free();
+                }
+                if(!verifyUniqueness)
+                {
+                    Get<Srp::Server>().HandleServiceUpdateResult(aId, kErrorNone);
+                }
+                // remove elements from list and de-allocate data
+            }
+        }
+        else
+        {
+            // host update, like address update..
+            AnnounceFromSrp(aHost, aId);
+            Get<Srp::Server>().HandleServiceUpdateResult(aId, kErrorNone);
+            ExitNow();
+        }
+    }
+exit:
+   return;
+}
+
+Message *MdnsServer::CreateSrpPublishMessage(const otSrpServerHost *aHost)
+{
+    Error            error = kErrorNone;
+    NameCompressInfo compressInfo(kDefaultDomainName);
+    char             name[Name::kMaxNameSize];
+
+    uint8_t             addrNum;
+    const Ip6::Address *addrs   = AsCoreType(aHost).GetAddresses(addrNum);
+    uint32_t            hostTtl = TimeMilli::MsecToSec(AsCoreType(aHost).GetExpireTime() - TimerMilli::GetNow());
+    const Srp::Server::Service *service = nullptr;
+
+    Header header;
+
+    Message *message = nullptr;
+
+    Question question(ResourceRecord::kTypeAny, ResourceRecord::kClassInternet);
+
+    bool                     shouldPublishHost = true;
+    const Srp::Server::Host *host              = nullptr;
+
+    VerifyOrExit((message = NewPacket()) != nullptr, error = kErrorNoBufs);
+
+    question.SetQuQuestion();
+
+    // Setup initial DNS response header
+    header.SetType(Header::kTypeQuery);
+
+    ConvertDomainName(name, AsCoreType(aHost).GetFullName(), kThreadDefaultDomainName, kDefaultDomainName);
+
+    // Hostname
+    while ((host = Get<Srp::Server>().GetNextHost(host)) != nullptr)
+    {
+        if (StringMatch(AsCoreType(aHost).GetFullName(), host->GetFullName(), kStringCaseInsensitiveMatch))
+        {
+            shouldPublishHost = false;
+            break;
+        }
+    }
+
+    if (shouldPublishHost)
+    {
+        // Hostname
+        SuccessOrExit(error = Get<Server>().AppendHostName(*message, name, compressInfo));
+        message->Append(question);
+        header.SetQuestionCount(header.GetQuestionCount() + 1);
+    }
+
+    while ((service = AsCoreType(aHost).FindNextService(service, OT_SRP_SERVER_FLAGS_BASE_TYPE_SERVICE_ONLY, nullptr,
+                                                        nullptr)) != nullptr)
+    {
+        char serviceName[Name::kMaxNameSize] = {0};
+
+        if (!service->IsDeleted())
+        {
+            ConvertDomainName(serviceName, service->GetInstanceName(), kThreadDefaultDomainName, kDefaultDomainName);
+            SuccessOrExit(error = Get<Server>().AppendInstanceName(*message, serviceName, compressInfo));
+            message->Append(question);
+            header.SetQuestionCount(header.GetQuestionCount() + 1);
+        }
+    }
+
+    if (shouldPublishHost)
+    {
+        // AAAA Resource Record
+        for (uint8_t i = 0; i < addrNum; i++)
+        {
+            SuccessOrExit(error = Get<Server>().AppendAaaaRecord(*message, name, addrs[i], hostTtl, compressInfo));
+            header.SetAuthorityRecordCount(header.GetAuthorityRecordCount() + 1);
+        }
+    }
+
+    while ((service = AsCoreType(aHost).FindNextService(service, OT_SRP_SERVER_FLAGS_BASE_TYPE_SERVICE_ONLY, nullptr,
+                                                        nullptr)) != nullptr)
+
+    {
+        char serviceName[Name::kMaxNameSize] = {0};
+
+        if (!service->IsDeleted())
+        {
+            ConvertDomainName(serviceName, service->GetInstanceName(), kThreadDefaultDomainName, kDefaultDomainName);
+            SuccessOrExit(error = Get<Server>().AppendSrvRecord(*message, serviceName, name, service->GetTtl(),
+                                                                service->GetPriority(), service->GetWeight(),
+                                                                service->GetPort(), compressInfo));
+            header.SetAuthorityRecordCount(header.GetAuthorityRecordCount() + 1);
+        }
+    }
+
+    header.SetResponseCode(Header::kResponseSuccess);
+    message->Write(0, header);
+
+    return message;
+
+exit:
+    return nullptr;
+}
+
+Message *MdnsServer::CreateSrpPublishMessage(const otSrpServerHost *aHost, LinkedList<SrpAdvertisingServiceInfo> &aList)
+{
+    Error            error = kErrorNone;
+    NameCompressInfo compressInfo(kDefaultDomainName);
+    char             name[Name::kMaxNameSize];
+
+    const Srp::Server::Service *service = nullptr;
+
+    Header header;
+
+    Message *message = nullptr;
+
+    Question question(ResourceRecord::kTypeAny, ResourceRecord::kClassInternet);
+
+    VerifyOrExit((message = NewPacket()) != nullptr, error = kErrorNoBufs);
+
+    question.SetQuQuestion();
+
+    // Setup initial DNS response header
+    header.SetType(Header::kTypeQuery);
+
+    ConvertDomainName(name, AsCoreType(aHost).GetFullName(), kThreadDefaultDomainName, kDefaultDomainName);
+
+    for (SrpAdvertisingServiceInfo &si : aList)
+    {
+        if ((service = AsCoreType(aHost).FindNextService(service, OT_SRP_SERVER_FLAGS_BASE_TYPE_SERVICE_ONLY,
+                                                         si.GetServiceName(), si.GetInstanceName())) != nullptr)
+        {
+            char serviceName[Name::kMaxNameSize] = {0};
+
+            if (!service->IsDeleted())
+            {
+                ConvertDomainName(serviceName, service->GetInstanceName(), kThreadDefaultDomainName,
+                                  kDefaultDomainName);
+                SuccessOrExit(error = Get<Server>().AppendInstanceName(*message, serviceName, compressInfo));
+                message->Append(question);
+                header.SetQuestionCount(header.GetQuestionCount() + 1);
+            }
+        }
+    }
+
+    for (SrpAdvertisingServiceInfo &si : aList)
+    {
+        if ((service = AsCoreType(aHost).FindNextService(service, OT_SRP_SERVER_FLAGS_BASE_TYPE_SERVICE_ONLY,
+                                                         si.GetServiceName(), si.GetInstanceName())) != nullptr)
+        {
+            char serviceName[Name::kMaxNameSize] = {0};
+
+            if (!service->IsDeleted())
+            {
+                ConvertDomainName(serviceName, service->GetInstanceName(), kThreadDefaultDomainName,
+                                  kDefaultDomainName);
+                SuccessOrExit(error = Get<Server>().AppendSrvRecord(*message, serviceName, name, service->GetTtl(),
+                                                                    service->GetPriority(), service->GetWeight(),
+                                                                    service->GetPort(), compressInfo));
+                header.SetAuthorityRecordCount(header.GetAuthorityRecordCount() + 1);
+            }
+        }
+    }
+
+    header.SetResponseCode(Header::kResponseSuccess);
+    message->Write(0, header);
+
+    return message;
+
+exit:
+    return nullptr;
+}
+
+Error MdnsServer::AnnounceFromSrp(const otSrpServerHost *aHost, uint32_t aId)
+{
+    Error      error     = kErrorNone;
+    Message   *message   = nullptr;
+    Announcer *announcer = AllocateAnnouncer(aId);
+    VerifyOrExit(announcer != nullptr, error = kErrorFailed);
+
+    message = CreateSrpAnnounceMessage(aHost);
+    Get<Srp::Server>().HandleServiceUpdateResult(aId, kErrorNone);
+    VerifyOrExit(message != nullptr, error = kErrorNoBufs);
+    VerifyOrExit(message->GetLength() != sizeof(Header), error = kErrorFailed);
+
+    announcer->EnqueueAnnounceMessage(*message);
+    announcer->StartAnnouncing();
+exit:
+    if(error != kErrorNone)
+    {
+        if(announcer)
+        {
+            RemoveAnnouncingInstance(announcer->GetId());
+        }
+    }
+    FreeMessageOnError(message, error);
+    return error;
+}
+
+Error MdnsServer::AnnounceFromSrp(const otSrpServerHost *aHost, LinkedList<SrpAdvertisingServiceInfo> &aList)
+{
+    Error      error     = kErrorNone;
+    Message   *message   = nullptr;
+    Announcer *announcer = Announcer::Allocate(GetInstance());
+    VerifyOrExit(announcer != nullptr, error = kErrorNoBufs);
+
+    message = CreateSrpAnnounceMessage(aHost, aList);
+    VerifyOrExit(message != nullptr, error = kErrorNoBufs);
+    VerifyOrExit(message->GetLength() != sizeof(Header), error = kErrorFailed);
+
+    announcer->EnqueueAnnounceMessage(*message);
+    announcer->StartAnnouncing();
+exit:
+    return error;
+}
+
+bool MdnsServer::AddressIsFromLocalSubnet(const Ip6::Address &srcAddr)
+{
+    const Ip6::Address *addresses;
+    uint8_t             numAddresses = 0;
+
+    addresses = GetAddresses(numAddresses);
+
+    for (uint8_t i = 0; i < numAddresses; i++)
+    {
+        if (otIp6PrefixMatch(reinterpret_cast<const otIp6Address *>(&srcAddr), reinterpret_cast<const otIp6Address *>(&addresses[i])))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+Message* MdnsServer::CreateSrpAnnounceMessage(const otSrpServerHost *aHost)
+{
+    Error            error = kErrorNone;
+    NameCompressInfo compressInfo(kDefaultDomainName);
+    char             name[Name::kMaxNameSize];
+
+    uint8_t             addrNum;
+    const Ip6::Address *addrs   = AsCoreType(aHost).GetAddresses(addrNum);
+    uint32_t            hostTtl = TimeMilli::MsecToSec(AsCoreType(aHost).GetExpireTime() - TimerMilli::GetNow());
+    const Srp::Server::Service *service    = nullptr;
+    const Srp::Server::Service *subService = nullptr;
+
+    Message *message = nullptr;
+    Header   header;
+
+    VerifyOrExit((message = NewPacket()) != nullptr, error = kErrorNoBufs);
+
+    header.SetType(Header::kTypeResponse);
+
+    Get<MdnsServer>().ConvertDomainName(name, AsCoreType(aHost).GetFullName(), kThreadDefaultDomainName, kDefaultDomainName);
+
+    // AAAA Resource Record
+    for (uint8_t i = 0; i < addrNum; i++)
+    {
+        SuccessOrExit(error = Get<Server>().AppendAaaaRecord(*message, name, addrs[i],
+                                                             hostTtl, compressInfo, true));
+        Server::IncResourceRecordCount(header, false);
+    }
+
+    while ((service = AsCoreType(aHost).FindNextService(service, OT_SRP_SERVER_FLAGS_BASE_TYPE_SERVICE_ONLY, nullptr,
+                                                        nullptr)) != nullptr)
+    {
+        char        serviceName[Name::kMaxNameSize] = {0};
+        const char *instanceName                    = service->GetInstanceName();
+
+        Get<MdnsServer>().ConvertDomainName(serviceName, instanceName, kThreadDefaultDomainName,
+                                            kDefaultDomainName);
+
+        SuccessOrExit(error = Get<Server>().AppendSrvRecord(
+                          *message, serviceName, name, service->GetTtl(),
+                          service->GetPriority(), service->GetWeight(), service->GetPort(), compressInfo, true));
+        Server::IncResourceRecordCount(header, false);
+
+        SuccessOrExit(error =
+                          Get<Server>().AppendPtrRecord(*message, service->GetServiceName(), instanceName,
+                                                        service->GetTtl(), compressInfo));
+        Server::IncResourceRecordCount(header, false);
+
+        SuccessOrExit(error =
+                          Get<Server>().AppendTxtRecord(*message, instanceName, service->GetTxtData(),
+                                                        service->GetTxtDataLength(), service->GetTtl(), compressInfo, true));
+
+        Server::IncResourceRecordCount(header, false);
+
+        while ((subService = AsCoreType(aHost).FindNextService(
+                    subService, (OT_SRP_SERVER_SERVICE_FLAG_SUB_TYPE | OT_SRP_SERVER_SERVICE_FLAG_ACTIVE), nullptr,
+                    instanceName)) != nullptr)
+        {
+            SuccessOrExit(error = Get<Server>().AppendPtrRecord(*message, subService->GetServiceName(), instanceName,
+                                                                subService->GetTtl(), compressInfo));
+            Server::IncResourceRecordCount(header, false);
+        }
+    }
+
+    message->Write(0, header);
+
+    return message;
+
+exit:
+    FreeMessageOnError(message, error);
+    return nullptr;
+}
+
+Message *MdnsServer::CreateSrpAnnounceMessage(const otSrpServerHost                 *aHost,
+                                              LinkedList<SrpAdvertisingServiceInfo> &aList)
+{
+    Error            error = kErrorNone;
+    NameCompressInfo compressInfo(kDefaultDomainName);
+    char             name[Name::kMaxNameSize];
+
+    uint8_t             addrNum;
+    const Ip6::Address *addrs   = AsCoreType(aHost).GetAddresses(addrNum);
+    uint32_t            hostTtl = TimeMilli::MsecToSec(AsCoreType(aHost).GetExpireTime() - TimerMilli::GetNow());
+    const Srp::Server::Service *service    = nullptr;
+    const Srp::Server::Service *subService = nullptr;
+
+    Message *message = nullptr;
+    Header   header;
+
+    VerifyOrExit((message = NewPacket()) != nullptr, error = kErrorNoBufs);
+
+    header.SetType(Header::kTypeResponse);
+
+    Get<MdnsServer>().ConvertDomainName(name, AsCoreType(aHost).GetFullName(), kThreadDefaultDomainName,
+                                        kDefaultDomainName);
+
+    // AAAA Resource Record
+    for (uint8_t i = 0; i < addrNum; i++)
+    {
+        SuccessOrExit(error = Get<Server>().AppendAaaaRecord(*message, name, addrs[i], hostTtl, compressInfo, true));
+        Server::IncResourceRecordCount(header, false);
+    }
+
+    for (SrpAdvertisingServiceInfo &si : aList)
+    {
+        if ((service = AsCoreType(aHost).FindNextService(service, OT_SRP_SERVER_FLAGS_BASE_TYPE_SERVICE_ONLY,
+                                                         si.GetServiceName(), si.GetInstanceName())) != nullptr)
+        {
+            SuccessOrExit(error = Get<Server>().AppendPtrRecord(*message, service->GetServiceName(),
+                                                                service->GetInstanceName(), service->GetTtl(),
+                                                                compressInfo));
+            Server::IncResourceRecordCount(header, false);
+
+            if (service->IsDeleted())
+            {
+                continue;
+            }
+
+            char        serviceName[Name::kMaxNameSize] = {0};
+            const char *instanceName                    = service->GetInstanceName();
+
+            Get<MdnsServer>().ConvertDomainName(serviceName, instanceName, kThreadDefaultDomainName,
+                                                kDefaultDomainName);
+
+            SuccessOrExit(error = Get<Server>().AppendSrvRecord(*message, serviceName, name, service->GetTtl(),
+                                                                service->GetPriority(), service->GetWeight(),
+                                                                service->GetPort(), compressInfo, true));
+            Server::IncResourceRecordCount(header, false);
+
+
+            SuccessOrExit(error = Get<Server>().AppendTxtRecord(*message, instanceName,
+                                                                service->GetTxtData(), service->GetTxtDataLength(),
+                                                                service->GetTtl(), compressInfo, true));
+
+            Server::IncResourceRecordCount(header, false);
+
+            while ((subService = AsCoreType(aHost).FindNextService(
+                        subService, (OT_SRP_SERVER_SERVICE_FLAG_SUB_TYPE | OT_SRP_SERVER_SERVICE_FLAG_ACTIVE), nullptr,
+                        instanceName)) != nullptr)
+            {
+                SuccessOrExit(error = Get<Server>().AppendPtrRecord(*message, subService->GetServiceName(),
+                                                                    instanceName, subService->GetTtl(), compressInfo));
+                Server::IncResourceRecordCount(header, false);
+            }
+        }
+    }
+
+    message->Write(0, header);
+
+    return message;
+
+exit:
+    FreeMessageOnError(message, error);
+    return nullptr;
+}
+
+Error MdnsServer::PublishFromSrp(const otSrpServerHost *aHost, Prober *aProber)
+{
+    Error error = kErrorNone;
+
+    Message *message = CreateSrpPublishMessage(aHost);
+    VerifyOrExit(message != nullptr, error = kErrorNoBufs);
+
+    if (message->GetLength() == sizeof(Header))
+    {
+        ExitNow(error = kErrorFailed);
+    }
+
+    aProber->EnqueueProbeMessage(*message);
+    aProber->StartProbing(aProber->IsProbingForHost());
+
+exit:
+    if (error != kErrorNone)
+    {
+        Get<Srp::Server>().HandleServiceUpdateResult(aProber->GetId(), kErrorFailed);
+        RemoveProbingInstance(aProber->GetId());
+    }
+    FreeMessageOnError(message, error);
+    return error;
+}
+
+Error MdnsServer::PublishFromSrp(const otSrpServerHost *aHost, Prober *aProber, LinkedList<SrpAdvertisingServiceInfo> &aList)
+{
+    Error error = kErrorNone;
+
+    Message *message = CreateSrpPublishMessage(aHost, aList);
+    VerifyOrExit(message != nullptr, error = kErrorNoBufs);
+
+    if (message->GetLength() == sizeof(Header))
+    {
+        ExitNow(error = kErrorFailed);
+    }
+
+    aProber->EnqueueProbeMessage(*message);
+    aProber->StartProbing(aProber->IsProbingForHost());
+
+exit:
+    if (error != kErrorNone)
+    {
+        Get<Srp::Server>().HandleServiceUpdateResult(aProber->GetId(), kErrorFailed);
+        RemoveProbingInstance(aProber->GetId());
+    }
+    FreeMessageOnError(message, error);
+    return error;
+}
+
+MdnsServer::Announcer* MdnsServer::ReturnAnnouncingInstanceContainingServiceId(const ServiceUpdateId &aServiceId)
+{
+    const uint32_t *ids;
+    uint8_t         numIds = 0;
+
+    for(MdnsServer::Announcer &announcer : mAnnouncingInstances)
+    {
+        if(announcer.GetId() == aServiceId)
+        {
+            return &announcer;
+        }
+
+        ids = announcer.GetServicesIdList(numIds);
+        if(!numIds)
+        {
+            continue;
+        }
+        else
+        {
+            for (uint8_t i = 0; i < numIds; i++)
+            {
+                if(ids[i] == aServiceId)
+                {
+                    return &announcer;
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+MdnsServer::Prober* MdnsServer::ReturnProbingInstanceContainingServiceId(const ServiceUpdateId &aServiceId)
+{
+    const uint32_t *ids;
+    uint8_t         numIds = 0;
+
+    for(MdnsServer::Prober &prober : mProbingInstances)
+    {
+        if(prober.GetId() == aServiceId)
+        {
+            return &prober;
+        }
+
+        ids = prober.GetServicesIdList(numIds);
+        if(!numIds)
+        {
+            continue;
+        }
+        else
+        {
+            for (uint8_t i = 0; i < numIds; i++)
+            {
+                if(ids[i] == aServiceId)
+                {
+                    return &prober;
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+Error MdnsServer::UpdateExistingProberDataEntries(Prober &aProber, Service &aService)
+{
+    const uint32_t *ids;
+    uint8_t         numIds = 0;
+
+    ids = aProber.GetServicesIdList(numIds);
+    Heap::Array<uint32_t> newArray;
+    uint32_t              idToRemove = aService.GetServiceUpdateId();
+
+    for (uint8_t i = 0; i < numIds; i++)
+    {
+        if (ids[i] != idToRemove)
+        {
+            newArray.PushBack(ids[i]);
+        }
+    }
+    AsNonConst(aProber).mServicesIdList.Free();
+    AsNonConst(aProber).mServicesIdList.TakeFrom(static_cast<Heap::Array<uint32_t> &&>(newArray));
+    return PublishHostAndServices(AsNonConst(&aProber));
+}
+
+Error MdnsServer::UpdateExistingAnnouncerDataEntries(Announcer &aAnnouncer, Service &aService)
+{
+    const uint32_t *ids;
+    uint8_t         numIds = 0;
+
+    ids = aAnnouncer.GetServicesIdList(numIds);
+    Heap::Array<uint32_t> newArray;
+    uint32_t              idToRemove = aService.GetServiceUpdateId();
+
+    for (uint8_t i = 0; i < numIds; i++)
+    {
+        if (ids[i] != idToRemove)
+        {
+            newArray.PushBack(ids[i]);
+        }
+    }
+    AsNonConst(aAnnouncer).mServicesIdList.Free();
+    AsNonConst(aAnnouncer).mServicesIdList.TakeFrom(static_cast<Heap::Array<uint32_t> &&>(newArray));
+    return AnnounceHostAndServices(aAnnouncer);
+}
+
+MdnsServer::Prober *MdnsServer::AllocateProber(bool aProbeForHost, const otSrpServerHost *aHost, uint32_t aId)
+{
+    Prober *prober = Prober::Allocate(GetInstance(), aProbeForHost, aHost, aId);
+    VerifyOrExit(prober != nullptr);
+
+    if (!mProbingInstances.ContainsMatching(prober->GetId()))
+    {
+        mProbingInstances.Push(*prober);
+    }
+    else
+    {
+        prober->Free();
+        ExitNow();
+    }
+
+    return prober;
+
+exit:
+    return nullptr;
+}
+
+MdnsServer::Announcer *MdnsServer::AllocateAnnouncer(uint32_t aId)
+{
+    Announcer *announcer = Announcer::Allocate(GetInstance(), aId);
+    VerifyOrExit(announcer != nullptr);
+
+    if (!mAnnouncingInstances.ContainsMatching(announcer->GetId()))
+    {
+        mAnnouncingInstances.Push(*announcer);
+    }
+    else
+    {
+        announcer->Free();
+        ExitNow();
+    }
+
+    return announcer;
+
+exit:
+    return nullptr;
+}
+
+Error MdnsServer::SrpAdvertisingServiceInfo::Init(const char *aServiceName, const char *aInstanceName)
+{
+    Error error = kErrorNone;
+
+    // VerifyOrExit(mServiceName.Set(aServiceName) != kErrorNone, error = kErrorFailed);
+    // VerifyOrExit(mInstanceName.Set(aInstanceName) != kErrorNone, error = kErrorFailed);
+
+    mServiceName.Set(aServiceName);
+    mInstanceName.Set(aInstanceName);
+
+    return error;
+}
+
 } // namespace ServiceDiscovery
 } // namespace Dns
 } // namespace ot

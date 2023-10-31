@@ -94,6 +94,15 @@ public:
     typedef otMdnsServerServiceUpdateId ServiceUpdateId;
 
     /**
+     * Represents the callback function pointer used to notify when a service entry fails to pass
+     * the probing step.
+     *
+     */
+    typedef otMdnsServerProbingCallback MdnsProbingCallback;
+
+    typedef otMdnsServerProbingContext MdnsServerProbingContext;
+
+    /**
      * This constructor initializes the object.
      *
      * @param[in]  aInstance     A reference to the OpenThread instance.
@@ -293,6 +302,27 @@ public:
 
     ServiceUpdateId AllocateId(void) { return mServiceUpdateId++; }
 
+    void RemoveProbingInstance(uint32_t aProbingInstanceId);
+    void RemoveAnnouncingInstance(uint32_t aAnnouncingInstanceId);
+    void SetCallback(MdnsProbingCallback aCallback, void *aContext) { mCallback.Set(aCallback, aContext); }
+
+    class SrpAdvertisingServiceInfo : public LinkedListEntry<SrpAdvertisingServiceInfo>, public Heap::Allocatable<SrpAdvertisingServiceInfo>
+    {
+        friend class MdnsServer;
+        friend class LinkedListEntry<SrpAdvertisingServiceInfo>;
+        friend class Heap::Allocatable<SrpAdvertisingServiceInfo>;
+
+        public:
+        const char *GetServiceName() { return mServiceName.AsCString();}
+        const char *GetInstanceName() { return mInstanceName.AsCString();}
+
+        private:
+        Error Init(const char *aServiceName, const char *aInstanceName);
+        Heap::String mServiceName;
+        Heap::String mInstanceName;
+        SrpAdvertisingServiceInfo *mNext;
+    };
+
     class Service : public otMdnsService, public LinkedListEntry<Service>, public Heap::Allocatable<Service>
     {
         friend class MdnsServer;
@@ -478,60 +508,15 @@ public:
                                    const char                *aServiceName  = nullptr,
                                    const char                *aInstanceName = nullptr) const;
 
-    class OutstandingUpdate : public LinkedListEntry<OutstandingUpdate>, public Heap::Allocatable<OutstandingUpdate>
+    class Announcer : public InstanceLocator, public LinkedListEntry<Announcer>, public Heap::Allocatable<Announcer>
     {
-        friend class LinkedListEntry<OutstandingUpdate>;
-        friend class Heap::Allocatable<OutstandingUpdate>;
-
+        friend class MdnsServer;
+        friend class Heap::Allocatable<Announcer>;
+        friend class LinkedList<Announcer>;
+        friend class LinkedListEntry<Announcer>;
     public:
-        enum Type : uint8_t
-        {
-            kTypeProbeAndAnnounce,
-            kTypeAnnounce,
-            kTypeHostGoodbyeAnnouncement,
-            kTypeSrpHostGoodbyeAnnouncement,
-            kTypeSrpServiceRemoved
-        };
-
-        enum State : uint8_t
-        {
-            kStateIdle,
-            kStateProbing,
-            kStateAnnouncing
-        };
-
-    public:
-        bool                            Matches(const uint32_t aId) const { return mId == aId; }
-        uint32_t                        GetId(void) { return mId; }
-        const otSrpServerHost          *GetHost(void) { return mHost; }
-        const char                     *GetHostName() {return mHostName.AsCString();}
-        void                            SetService(const otSrpServerService *aService) { mService = aService; }
-        LinkedList<MdnsServer::Service> GetServiceList(void) { return mServiceList; }
-        const otSrpServerService       *GetService(void) { return mService; }
-
-        void  SetState(State aState) { mState = aState; }
-        State GetState(void) { return mState; }
-        void  SetType(Type aType) { mType = aType; }
-        Type  GetType(void) { return mType; }
-
-        void PushService(Service &aService) { mServiceList.Push(aService); }
-    private:
-        uint32_t                        mId;
-        const otSrpServerHost          *mHost;
-        Heap::String                    mHostName;
-        const otSrpServerService       *mService;
-        LinkedList<MdnsServer::Service> mServiceList;
-        State                           mState;
-        Type                            mType;
-
-        OutstandingUpdate *mNext;
-
-        Error Init(uint32_t aId, otSrpServerHost *aHost, Type aType);
-    };
-
-    class Announcer : public InstanceLocator
-    {
-    public:
+        Announcer(Instance &aInstance, uint32_t aId);
+        Announcer(Instance &aInstance);
         enum State : uint8_t
         {
             kIdle,
@@ -543,44 +528,49 @@ public:
         static constexpr uint32_t kTxAnnounceInterval = 1000;
         static constexpr uint8_t  kMaxTxCount         = 2;
 
-        Announcer(Instance &aInstance);
-        void EnqueueAnnounceMessage(Message &aAnnounceMessage) { mAnnouncements.Enqueue(aAnnounceMessage); };
-        void StartAnnouncing();
-        void HandleTimer();
-        void Stop();
+        void            EnqueueAnnounceMessage(Message &aAnnounceMessage) { mAnnouncements.Enqueue(aAnnounceMessage); };
+        void            StartAnnouncing();
+        static void     HandleTimer(Timer &aTimer);
+        void            HandleTimer(void);
+        void            Stop();
+        const uint32_t *GetServicesIdList(uint8_t &aNumServices) const;
+        void            PushServiceId(uint32_t aId) { mServicesIdList.PushBack(aId); }
+        uint32_t        GetId(void) { return mId; }
+        bool            Matches(uint32_t aId) const { return mId == aId; }
 
     private:
-        using AnnouncerTimer = TimerMilliIn<MdnsServer::Announcer, &MdnsServer::Announcer::HandleTimer>;
+        Announcer        *mNext;
+        uint32_t          mId;
+        TimerMilliContext mTimer;
 
         uint8_t          mTxCount;
-        AnnouncerTimer   mTimer;
         Announcer::State mState;
 
-        MessageQueue mAnnouncements;
+        MessageQueue          mAnnouncements;
+        Heap::Array<uint32_t> mServicesIdList;
 
         void SetState(State aState) { mState = aState; }
     };
 
-    MdnsServer::Announcer &GetAnnouncer() { return mAnnouncer; }
     Ip6::Udp::Socket      &GetMcastSocket() { return mSocket; }
     MdnsServer::Service   *GetServiceListHead() { return mServices.GetHead(); }
 
-    class Prober : public InstanceLocator
+    class Prober : public InstanceLocator, public LinkedListEntry<Prober>, public Heap::Allocatable<Prober>
     {
+        friend class MdnsServer;
+        friend class Heap::Allocatable<Prober>;
+        friend class LinkedList<Prober>;
+        friend class LinkedListEntry<Prober>;
+
     public:
-        /*
-            This class implements probe and announce features.
-            'Start()' schedules a cycle of transmissions of 'kMaxTxCount' separated by
-            'kTxInterval'. At the end of cycle, the callback 'HandleProberFinished()' is invoked to inform end
-            of the cycle to 'MdnsServer'
-        */
+        Prober(Instance &aInstance, bool aProbeForHost, const otSrpServerHost *aHost, uint32_t aId);
 
         enum State : uint8_t
         {
             kIdle,              // Idle state
             kTransitionToProbe, // Started timer, first probe yet not send
             kProbing,           // At least one probe has been sent; currently probing for unique records
-            kCompleted          // Probing and announcing are now completed
+            kCompleted          // Probing is completed
         };
 
         enum LexicographicallyCompare : int
@@ -609,16 +599,24 @@ public:
             RREntry *mNext;
         };
 
-        Prober(Instance &aInstance);
-        void          EnqueueProbeMessage(Message &aProbeMessage) { mQueries.Enqueue(aProbeMessage); };
-        bool          IsInProgress(void) const { return mTimer.IsRunning(); }
-        void          StartProbing(bool aIsFromHost);
-        void          Stop(Error aError);
-        void          HandleTimer();
-        Prober::State GetState(void) const { return mState; }
-        void          ProcessQuery(const Header &aRequestHeader, Message &aRequestMessage);
-        void          ProcessResponse(const Header &aRequestHeader, Message &aRequestMessage);
-        bool          IsProbingForHost(void) const { return (mProbeForHost == true); }
+        void                   EnqueueProbeMessage(Message &aProbeMessage) { mQueries.Enqueue(aProbeMessage); }
+        Message               *GetProbingMessage(void) { return mQueries.GetHead(); }
+        void                   StartProbing(bool aIsFromHost);
+        void                   Stop(Error aError, MdnsServerProbingContext *aContext = nullptr);
+        static void            HandleTimer(Timer &aTimer);
+        void                   HandleTimer(void);
+        Prober::State          GetState(void) const { return mState; }
+        void                   ProcessQuery(const Header &aRequestHeader, Message &aRequestMessage);
+        void                   ProcessResponse(const Header &aRequestHeader, Message &aRequestMessage);
+        bool                   IsProbingForHost(void) const { return (mProbeForHost == true); }
+        uint32_t               GetId(void) { return mId; }
+        uint32_t               GetId(void) const { return mId; }
+        const uint32_t        *GetServicesIdList(uint8_t &aNumServices) const;
+        void                   PushServiceId(uint32_t aId) { mServicesIdList.PushBack(aId); }
+        const otSrpServerHost *GetHost(void) const { return mHost; }
+        bool                   Matches(ServiceUpdateId aId) const { return mId == aId; }
+        bool Matches(ServiceUpdateId aId, const otSrpServerHost *aHost) const { return (mId == aId && aHost == mHost); }
+        bool IsRunning() { return mIsRunning; }
 
     private:
         enum TiebreakingResult : int
@@ -637,19 +635,23 @@ public:
         static constexpr uint32_t kMaxProbingConflictstimeInterval = 10000;
         static constexpr uint8_t  kMaxProbingConflicts             = 15;
 
-        using ProberTimer = TimerMilliIn<MdnsServer::Prober, &MdnsServer::Prober::HandleTimer>;
+        TimerMilliContext mTimer;
 
-        uint8_t       mTxCount;
-        ProberTimer   mTimer;
-        Prober::State mState;
-        bool          mProbeForHost;
-        MessageQueue  mQueries;
-        uint8_t       mConflictsCount;
-        bool          mProbeRateLimit;
-        uint32_t      mTimeOfConflict[kMaxProbingConflicts];
+        Prober                *mNext;
+        uint8_t                mTxCount;
+        Prober::State          mState;
+        bool                   mProbeForHost;
+        uint32_t               mId;
+        MessageQueue           mQueries;
+        uint8_t                mConflictsCount;
+        bool                   mProbeRateLimit;
+        uint32_t               mTimeOfConflict[kMaxProbingConflicts];
+        const otSrpServerHost *mHost;
+        bool                   mIsRunning;
 
-        LinkedList<RREntry> mOwnTiebreakingRecords;
-        LinkedList<RREntry> mIncomingTiebreakingRecords;
+        LinkedList<RREntry>   mOwnTiebreakingRecords;
+        LinkedList<RREntry>   mIncomingTiebreakingRecords;
+        Heap::Array<uint32_t> mServicesIdList;
 
         void     AddRecordOffsetsFromAuthoritativeSection(const Header        &aHeader,
                                                           const Message       &aMessage,
@@ -667,8 +669,6 @@ public:
         void     FreeAllRREntries(LinkedList<RREntry> &aList);
         void     ProcessProbeConflict(void);
     };
-
-    MdnsServer::Prober &GetProber() { return mProber; }
 
 private:
     using NameCompressInfo         = Server::NameCompressInfo;
@@ -716,19 +716,6 @@ private:
                                     Client::ServiceResponse *serviceResponse,
                                     Client::BrowseResponse  *browseResponse);
 
-    /**
-     * This function converts an ASCII encoded string to it's corresponding hexstring representation as text.
-     * This function is usually used to convert the TXT value for a specific service.
-     *
-     * For each character in @p aInputString, it outputs the a pair of characters that reperesent the
-     * ASCII code (e.g., 'a' = 0x61, gets converted to '61').
-     *
-     * In addition to this, function adds as the first character of @p aOutputString the length of the input
-     * @p aInputString (e.g., 'a' gets converted to '0161').
-     *
-     * @param[in] aInputString      A pointer to the ASCII string that needs to be converted.
-     * @param[out] aOutputString    The resulting hexstring format.
-     */
 
     /**
      * This function requests a service content to be updated with server.
@@ -746,12 +733,11 @@ private:
                                const otDnsTxtEntry *aTxtEntries,
                                uint8_t              mNumTxtEntries);
 
-    void  HandleProberFinished(Error aError);
-    void  HandleAnnouncerFinished();
+    void  HandleProberFinished(const Prober &aProber, Error aError, MdnsServerProbingContext *aContext = nullptr);
+    void  HandleAnnouncerFinished(const Announcer &aAnnouncer);
     Error AnnounceServiceGoodbye(Service &aService);
-    Error AnnounceSrpServiceGoodbye(const otSrpServerService *aService);
     Error AnnounceHostGoodbye();
-    Error AnnounceSrpHostGoodbye(const otSrpServerHost *aHost);
+    Error AnnounceSrpHostGoodbye(otSrpServerServiceUpdateId aId, const otSrpServerHost *aHost);
     Error AppendServiceInfo(Message &aMessage, Header &aHeader, Service &aService, NameCompressInfo &aCompressInfo);
     Error SendPacket(Message          &aMessage,
                      Header           &aHeader,
@@ -771,30 +757,38 @@ private:
                                      NameCompressInfo &aCompressInfo,
                                      bool              aAdditional);
 
-    void        MdnsProbingHandler();
-    void        OutstandingUpdateHandler();
-    void        MdnsAnnouncingHandler();
     static void SrpAdvertisingProxyHandler(otSrpServerServiceUpdateId aId,
                                            const otSrpServerHost     *aHost,
                                            uint32_t                   aTimeout,
                                            void                      *aContext);
     void SrpAdvertisingProxyHandler(otSrpServerServiceUpdateId aId, const otSrpServerHost *aHost, uint32_t aTimeout);
-    void CheckForOutstandingUpdates(void);
-    Message *CreateHostAndServicesAnnounceMessage(OutstandingUpdate *aUpdate);
-    Message *CreateHostAndServicesPublishMessage(OutstandingUpdate *aUpdate);
-    Error    PublishHostAndServices(OutstandingUpdate *aUpdate);
-    Message *CreateSrpAnnounceMessage(const char *aHostName);
-    Message *CreateSrpPublishMessage(const otSrpServerHost *aHost);
-    Error    PublishFromSrp(const otSrpServerHost *aHost);
-    bool     AddressIsFromLocalSubnet(const Ip6::Address &srcAddr);
+    void HandleSrpAdvertisingProxy(otSrpServerServiceUpdateId aId, const otSrpServerHost *aHost);
+    Message   *NewPacket();
+    Message   *CreateHostAndServicesAnnounceMessage(Announcer &aAnnouncer);
+    Message   *CreateHostAndServicesPublishMessage(Prober *aProber);
+    Error      AnnounceHostAndServices(Prober &aProber);
+    Error      AnnounceHostAndServices(Announcer &aAnnouncer);
+    Error      PublishHostAndServices(Prober *aUpdate);
+    Message   *CreateSrpAnnounceMessage(const otSrpServerHost *aHost);
+    Message   *CreateSrpAnnounceMessage(const otSrpServerHost *aHost, LinkedList<SrpAdvertisingServiceInfo> &aList);
+    Message   *CreateSrpPublishMessage(const otSrpServerHost *aHost);
+    Message   *CreateSrpPublishMessage(const otSrpServerHost *aHost, LinkedList<SrpAdvertisingServiceInfo> &aList);
+    Error      PublishFromSrp(const otSrpServerHost *aHost, Prober *aProber);
+    Error      PublishFromSrp(const otSrpServerHost *aHost, Prober *aProber, LinkedList<SrpAdvertisingServiceInfo> &aList);
+    Error      AnnounceFromSrp(const otSrpServerHost *aHost, uint32_t aId);
+    Error      AnnounceFromSrp(const otSrpServerHost *aHost, LinkedList<SrpAdvertisingServiceInfo> &aList);
+    bool       AddressIsFromLocalSubnet(const Ip6::Address &srcAddr);
+    Announcer *ReturnAnnouncingInstanceContainingServiceId(const ServiceUpdateId &aServiceId);
+    Prober    *ReturnProbingInstanceContainingServiceId(const ServiceUpdateId &aServiceId);
+    Error      UpdateExistingProberDataEntries(Prober &aProber, Service &aService);
+    Prober    *AllocateProber(bool aProbeForHost, const otSrpServerHost *aHost, uint32_t aId);
+    Error      UpdateExistingAnnouncerDataEntries(Announcer &aAnnouncer, Service &aService);
+    Announcer *AllocateAnnouncer(uint32_t aId);
 
     using RetryTimer = TimerMilliIn<MdnsServer, &MdnsServer::HandleTimer>;
 #if MDNS_USE_TASKLET
-    using RxTask = TaskletIn<MdnsServer, &MdnsServer::HandleUdpReceive>;
+    using RxTask             = TaskletIn<MdnsServer, &MdnsServer::HandleUdpReceive>;
 #endif
-    using OutstandingUpdateTask = TaskletIn<MdnsServer, &MdnsServer::OutstandingUpdateHandler>;
-    using MdnsProbingTask       = TaskletIn<MdnsServer, &MdnsServer::MdnsProbingHandler>;
-    using MdnsAnnouncingTask    = TaskletIn<MdnsServer, &MdnsServer::MdnsAnnouncingHandler>;
 
     static const char kDefaultDomainName[];
     static const char kThreadDefaultDomainName[];
@@ -810,14 +804,11 @@ private:
     RxTask mHandleUdpReceive;
 #endif
     LinkedList<Service>           mServices;
-    Announcer                     mAnnouncer;
-    LinkedList<OutstandingUpdate> mOutstandingUpdates;
-    MdnsProbingTask               mMdnsProbing;
-    MdnsAnnouncingTask            mMdnsAnnouncing;
     ServiceUpdateId               mServiceUpdateId;
-    Prober                        mProber;
     bool                          mIsHostVerifiedUnique;
-    OutstandingUpdateTask         mMdnsOustandingUpdate;
+    LinkedList<Prober>            mProbingInstances;
+    LinkedList<Announcer>         mAnnouncingInstances;
+    Callback<MdnsProbingCallback> mCallback;
 };
 
 } // namespace ServiceDiscovery

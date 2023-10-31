@@ -75,6 +75,30 @@ typedef struct otMdnsServiceSubTypeEntry otMdnsServiceSubTypeEntry;
  */
 typedef uint32_t otMdnsServerServiceUpdateId;
 
+typedef struct
+{
+    char name[OT_DNS_MAX_NAME_SIZE];
+    char label[OT_DNS_MAX_LABEL_SIZE];
+} otMdnsServerProbingContext;
+
+/**
+ * Pointer is called whenever the mDNS Server probing procedure fails.
+ *
+ * @param[in] aContext  The user context pointer.
+ *
+ */
+typedef void (*otMdnsServerProbingCallback)(void *aContext, otMdnsServerProbingContext *aProbingContext);
+
+/**
+ * Sets the mDNS Server probing procedure callback.
+ *
+ * @param[in] aInstance  A pointer to an OpenThread instance.
+ * @param[in] aCallback  A pointer to the mDNS Server probing callback.
+ * @param[in] aContext   A user context pointer.
+ *
+ */
+void otMdnsServerSetProbingCallback(otInstance *aInstance, otMdnsServerProbingCallback aCallback, void *aContext);
+
 /**
  * This function returns True if the Server has been started and is running.
  *

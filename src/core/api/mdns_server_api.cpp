@@ -43,6 +43,11 @@
 
 using namespace ot;
 
+void otMdnsServerSetProbingCallback(otInstance *aInstance, otMdnsServerProbingCallback aCallback, void *aContext)
+{
+    AsCoreType(aInstance).Get<Dns::ServiceDiscovery::MdnsServer>().SetCallback(aCallback, aContext);
+}
+
 bool otMdnsServerIsRunning(otInstance *aInstance)
 {
     return AsCoreType(aInstance).Get<Dns::ServiceDiscovery::MdnsServer>().IsRunning();
