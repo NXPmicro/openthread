@@ -714,7 +714,7 @@ Header::Response MdnsServer::ResolveQuestion(const char       *aName,
         bool ptrQueryMatched =
             (qtype == ResourceRecord::kTypePtr || qtype == ResourceRecord::kTypeAny) && serviceNameMatched;
         bool srvQueryMatched =
-            (qtype == ResourceRecord::kTypePtr || qtype == ResourceRecord::kTypeAny) && instanceNameMatched;
+            (qtype == ResourceRecord::kTypeSrv || qtype == ResourceRecord::kTypeAny) && instanceNameMatched;
         bool txtQueryMatched =
             (qtype == ResourceRecord::kTypeTxt || qtype == ResourceRecord::kTypeAny) && instanceNameMatched;
 
