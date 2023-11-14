@@ -207,6 +207,8 @@ public:
      * This function requests a service to be registered with server.
      * @param[in] aInstanceName         The service instance name label (e.g., "ins._http._tcp.local.") .
      * @param[in] aServiceName          The service labels (e.g., "_http._tcp.local.").
+     * @param[in] aSubtypeLabels        The service subtypes labels (e.g., "_sub1.http._tcp.local.").
+     * @param[in] aNumSubtypesEntries   Number of entries in the @p aSubtypeLabels array.
      * @param[in] aPort                 The service port number.
      * @param[in] aTxtEntries           A pointer to an array containing TXT entries (e.g., ["VAL1=1", "VAL2=2"])
      *                                  (`mNumTxtEntries` gives num of entries).
@@ -218,6 +220,8 @@ public:
      */
     Error AddService(const char          *aInstanceName,
                      const char          *aServiceName,
+                     const char         **aSubtypeLabels,
+                     uint8_t              aNumSubtypesEntries,
                      uint16_t             aPort,
                      const otDnsTxtEntry *aTxtEntries,
                      uint8_t              mNumTxtEntries);
@@ -293,6 +297,24 @@ public:
         friend class LinkedListEntry<Service>;
 
     public:
+        class SubTypeEntry : public Heap::Allocatable<SubTypeEntry>, public LinkedListEntry<SubTypeEntry>
+        {
+            friend class Heap::Allocatable<SubTypeEntry>;
+            friend class LinkedListEntry<SubTypeEntry>;
+
+        public:
+            SubTypeEntry(const char *aName) { mInstanceName.Set(aName); }
+            const char *GetName() { return mInstanceName.AsCString(); }
+            bool        Matches(const char *aInstanceName) const
+            {
+                return StringMatch(aInstanceName, mInstanceName.AsCString(), kStringCaseInsensitiveMatch);
+            }
+
+        private:
+            Heap::String  mInstanceName;
+            SubTypeEntry *mNext;
+        };
+
         enum State : uint8_t
         {
             kJustAdded = 0,
@@ -301,6 +323,27 @@ public:
             kAnnouncing,
             kAnnounced
         };
+
+         /**
+         * This is the destructor for `Service` object.
+         *
+         */
+        ~Service(void) { Free(); }
+
+        /**
+         * Frees any memory allocated by the `Service`.
+         *
+         * The `Service` destructor will automatically call `Free()`. This method allows caller to free memory explicitly.
+         *
+         */
+        void Free(void)
+        {
+            for(SubTypeEntry &entry : mSubTypesList)
+            {
+                mSubTypesList.Remove(entry);
+                entry.Free();
+            }
+        }
 
         /**
          * This method gets the full service name of the service.
@@ -395,6 +438,10 @@ public:
          */
         bool Matches(ServiceUpdateId aId) const { return mId == aId; }
 
+        void PushSubTypeEntry(SubTypeEntry &aEntry) { mSubTypesList.Push(aEntry); }
+
+        LinkedList<SubTypeEntry> GetSubTypeList(void) { return mSubTypesList; }
+
     private:
         Error Init(const char *aServiceName, const char *aInstanceName, uint16_t aPort, uint16_t aId);
         bool  MatchesServiceName(const char *aServiceName) const;
@@ -411,6 +458,7 @@ public:
         bool            mIsToBeAnnounced;
         State           mState;
         ServiceUpdateId mId;
+        LinkedList<SubTypeEntry> mSubTypesList;
     };
 
     Service       *FindServiceById(uint32_t aId) { return mServices.FindMatching(aId); }
@@ -456,7 +504,6 @@ public:
         Type  GetType(void) { return mType; }
 
         void PushService(Service &aService) { mServiceList.Push(aService); }
-
     private:
         uint32_t                        mId;
         const otSrpServerHost          *mHost;

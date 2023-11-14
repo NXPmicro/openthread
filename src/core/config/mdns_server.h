@@ -55,4 +55,14 @@
 #define OPENTHREAD_CONFIG_MDNS_SERVER_PORT 5353
 #endif
 
+/**
+ * @def OPENTHREAD_CONFIG_MDNS_BUFFERS_SERVICE_MAX_SUB_TYPES
+ *
+ * Specifies the maximum number of service subtype labels (array length) in the mDNS service pool.
+ *
+ */
+#ifndef OPENTHREAD_CONFIG_MDNS_BUFFERS_SERVICE_MAX_SUB_TYPES
+#define OPENTHREAD_CONFIG_MDNS_BUFFERS_SERVICE_MAX_SUB_TYPES 10
+#endif
+
 #endif // CONFIG_MDNS_SERVER_H_

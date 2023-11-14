@@ -51,6 +51,7 @@ namespace ServiceDiscovery {
 
 const char         MdnsServer::kDefaultDomainName[]       = "local.";
 const char         MdnsServer::kThreadDefaultDomainName[] = "default.service.arpa.";
+static const char  kServiceSubTypeLabel[]                 = "._sub.";
 const otIp6Address kMdnsMulticastGroup                    = {0xFF, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFB};
 const otIp6Address kAnyAddress                            = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -707,9 +708,31 @@ Header::Response MdnsServer::ResolveQuestion(const char       *aName,
     bool             needAdditionalAaaaRecord = false;
     Header::Response responseCode             = Header::kResponseSuccess;
 
+    bool serviceNameMatched = false;
+
+    const char *subServiceName = nullptr;
+    bool        isSubTypeQuery = false;
+
+    subServiceName = StringFind(aName, kServiceSubTypeLabel, kStringCaseInsensitiveMatch);
+    isSubTypeQuery = (subServiceName != nullptr);
+
+    if (isSubTypeQuery)
+    {
+        // Skip over the "._sub." label to get to the base
+        // service name.
+        subServiceName += sizeof(kServiceSubTypeLabel) - 1;
+    }
+
     while ((service = FindNextService(service)) != nullptr)
     {
-        bool serviceNameMatched  = service->MatchesServiceName(aName);
+        if (isSubTypeQuery)
+        {
+            serviceNameMatched = service->MatchesServiceName(subServiceName);
+        }
+        else
+        {
+            serviceNameMatched = service->MatchesServiceName(aName);
+        }
         bool instanceNameMatched = service->MatchesInstanceName(aName);
         bool ptrQueryMatched =
             (qtype == ResourceRecord::kTypePtr || qtype == ResourceRecord::kTypeAny) && serviceNameMatched;
@@ -725,11 +748,30 @@ Header::Response MdnsServer::ResolveQuestion(const char       *aName,
 
         if (!aAdditional && ptrQueryMatched)
         {
-            VerifyOrExit(
-                (Server::AppendPtrRecord(aResponseMessage, service->GetServiceName(), service->GetInstanceName(),
-                                         service->GetTtl(), aCompressInfo) == kErrorNone),
-                responseCode = Header::kResponseNameError);
-            Server::IncResourceRecordCount(aResponseHeader, false);
+            if (isSubTypeQuery)
+            {
+                for (Service::SubTypeEntry &entry : AsNonConst(service)->GetSubTypeList())
+                {
+                    if (StringMatch(entry.GetName(), aName, kStringExactMatch))
+                    {
+                        VerifyOrExit(
+                            (Server::AppendPtrRecord(aResponseMessage, entry.GetName(), service->GetInstanceName(),
+                                                     service->GetTtl(), aCompressInfo) == kErrorNone),
+                            responseCode = Header::kResponseNameError);
+                        Server::IncResourceRecordCount(aResponseHeader, false);
+
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                VerifyOrExit(
+                    (Server::AppendPtrRecord(aResponseMessage, service->GetServiceName(), service->GetInstanceName(),
+                                             service->GetTtl(), aCompressInfo) == kErrorNone),
+                    responseCode = Header::kResponseNameError);
+                Server::IncResourceRecordCount(aResponseHeader, false);
+            }
         }
 
         if ((!aAdditional && srvQueryMatched) || (aAdditional && ptrQueryMatched))
@@ -1192,6 +1234,8 @@ const char *MdnsServer::GetHostName() { return mHostName.AsCString(); }
 
 Error MdnsServer::AddService(const char          *aInstanceName,
                              const char          *aServiceName,
+                             const char          **aSubtypeLabels,
+                             uint8_t              aNumSubtypesEntries,
                              uint16_t             aPort,
                              const otDnsTxtEntry *aTxtEntries,
                              uint8_t              mNumTxtEntries)
@@ -1241,6 +1285,16 @@ Error MdnsServer::AddService(const char          *aInstanceName,
 
     mServices.Push(*service);
 
+    for (uint8_t index = 0; index < aNumSubtypesEntries; index++)
+    {
+        String<Name::kMaxNameSize> instanceName;
+        instanceName.Append("%s%s%s", aSubtypeLabels[index], kServiceSubTypeLabel, aServiceName);
+
+        Service::SubTypeEntry *entry = Service::SubTypeEntry::Allocate(instanceName.AsCString());
+        VerifyOrExit(entry != nullptr, error = kErrorNoBufs);
+        service->PushSubTypeEntry(*entry);
+    }
+
     if (GetState() == kStateRunning)
     {
         update = OutstandingUpdate::AllocateAndInit(service->GetServiceUpdateId(), nullptr, OutstandingUpdate::kTypeProbeAndAnnounce);
@@ -1262,6 +1316,10 @@ Error MdnsServer::AddService(const char          *aInstanceName,
     }
 
 exit:
+    if(error != kErrorNone && service != nullptr)
+    {
+        service->Free();
+    }
     return error;
 }
 
@@ -1375,11 +1433,17 @@ Error MdnsServer::UpdateService(const char          *aInstanceName,
 exit:
     if (error == kErrorInvalidState)
     {
-        if(service->GetState() == Service::State::kProbing)
+        if (service->GetState() == Service::State::kProbing)
         {
-            if(RemoveService(aInstanceName, aServiceName) == kErrorNone)
+            const char *subTypes[OPENTHREAD_CONFIG_MDNS_BUFFERS_SERVICE_MAX_SUB_TYPES];
+            uint8_t     index = 0;
+            for (Service::SubTypeEntry &entry : service->GetSubTypeList())
             {
-                AddService(aInstanceName, aServiceName, aPort, aTxtEntries, mNumTxtEntries);
+                subTypes[index++] = entry.GetName();
+            }
+            if (RemoveService(aInstanceName, aServiceName) == kErrorNone)
+            {
+                AddService(aInstanceName, aServiceName, subTypes, index, aPort, aTxtEntries, mNumTxtEntries);
             }
         }
     }
@@ -1554,6 +1618,16 @@ Error MdnsServer::AppendServiceInfo(Message          &aMessage,
     SuccessOrExit(error = Server::AppendTxtRecord(aMessage, aService.GetInstanceName(), aService.GetTxtData(),
                                                   aService.GetTxtDataLength(), kDefaultTtl, aCompressInfo, aService.GetState() >= Service::kProbed));
     Server::IncResourceRecordCount(aHeader, false);
+
+    if (!aService.GetSubTypeList().IsEmpty())
+    {
+        for (Service::SubTypeEntry &entry : aService.GetSubTypeList())
+        {
+            SuccessOrExit(error = Server::AppendPtrRecord(aMessage, entry.GetName(), aService.GetInstanceName(),
+                                                          aService.GetTtl(), aCompressInfo));
+            Server::IncResourceRecordCount(aHeader, false);
+        }
+    }
 
 exit:
     return error;

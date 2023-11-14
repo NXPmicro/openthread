@@ -98,14 +98,17 @@ exit:
 
 template <> otError MdnsServer::Process<Cmd("service")>(Arg aArgs[])
 {
-    otError error = OT_ERROR_NONE;
-    uint8_t txtBuffer[OPENTHREAD_CONFIG_SRP_CLIENT_BUFFERS_TXT_BUFFER_SIZE] = {0};
-    otDnsTxtEntry txtEntry;
-    otDnsTxtEntry *txtEntryPtr = nullptr;
-    uint8_t numTxtEntries = 0;
+    otError        error                                                           = OT_ERROR_NONE;
+    uint8_t        txtBuffer[OPENTHREAD_CONFIG_SRP_CLIENT_BUFFERS_TXT_BUFFER_SIZE] = {0};
+    otDnsTxtEntry  txtEntry;
+    otDnsTxtEntry *txtEntryPtr        = nullptr;
+    uint8_t        numTxtEntries      = 0;
+    uint8_t        numSubtypesEntries = 0;
 
-    txtEntry.mKey= nullptr;
+    txtEntry.mKey   = nullptr;
     txtEntry.mValue = txtBuffer;
+
+    const char *subtypeLabels[OPENTHREAD_CONFIG_MDNS_BUFFERS_SERVICE_MAX_SUB_TYPES] = {nullptr};
 
     if (aArgs[0].IsEmpty())
     {
@@ -138,11 +141,35 @@ template <> otError MdnsServer::Process<Cmd("service")>(Arg aArgs[])
         const char *instanceName;
         const char *serviceName;
         uint16_t    port;
+        char       *label;
 
         VerifyOrExit(!aArgs[1].IsEmpty() && !aArgs[2].IsEmpty(), error = OT_ERROR_INVALID_ARGS);
 
         instanceName = aArgs[1].GetCString();
         serviceName  = aArgs[2].GetCString();
+
+        // Service subtypes are added as part of service name as a comma separated list
+        // e.g., "_service._udp,_sub1,_sub2"
+
+        label = strchr(serviceName, ',');
+
+        if (label != nullptr)
+        {
+            for (uint16_t index = 0; index + 1 < OPENTHREAD_CONFIG_MDNS_BUFFERS_SERVICE_MAX_SUB_TYPES; index++)
+            {
+                *label++             = '\0';
+                subtypeLabels[index] = label;
+                numSubtypesEntries++;
+
+                label = strchr(label, ',');
+
+                if (label == nullptr)
+                {
+                    break;
+                }
+            }
+            VerifyOrExit(label == nullptr, error = OT_ERROR_NO_BUFS);
+        }
 
         SuccessOrExit(error = aArgs[3].ParseAsUint16(port));
 
@@ -153,7 +180,8 @@ template <> otError MdnsServer::Process<Cmd("service")>(Arg aArgs[])
             numTxtEntries = 1;
         }
 
-        error = otMdnsServerAddService(GetInstancePtr(), instanceName, serviceName, port, txtEntryPtr, numTxtEntries);
+        error = otMdnsServerAddService(GetInstancePtr(), instanceName, serviceName, subtypeLabels, numSubtypesEntries,
+                                       port, txtEntryPtr, numTxtEntries);
     }
     else if (aArgs[0] == "update")
     {

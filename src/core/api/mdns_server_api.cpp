@@ -81,12 +81,14 @@ const char *otMdnsServerGetHostName(otInstance *aInstance)
 otError otMdnsServerAddService(otInstance          *aInstance,
                                const char          *aInstanceName,
                                const char          *aServiceName,
+                               const char         **aSubtypeLabels,
+                               uint8_t              aNumSubtypesEntries,
                                uint16_t             aPort,
                                const otDnsTxtEntry *aTxtEntries,
                                uint8_t              mNumTxtEntries)
 {
-    return AsCoreType(aInstance).Get<Dns::ServiceDiscovery::MdnsServer>().AddService(aInstanceName, aServiceName, aPort,
-                                                                                     aTxtEntries, mNumTxtEntries);
+    return AsCoreType(aInstance).Get<Dns::ServiceDiscovery::MdnsServer>().AddService(
+        aInstanceName, aServiceName, aSubtypeLabels, aNumSubtypesEntries, aPort, aTxtEntries, mNumTxtEntries);
 }
 
 otError otMdnsServerUpdateService(otInstance          *aInstance,

@@ -146,6 +146,8 @@ otError otMdnsServerSetHostName(otInstance *aInstance, const char *aHostName);
  * @param[in] aInstance             A pointer to the OpenThread instance.
  * @param[in] aInstanceName         The service instance name label (e.g., "ins._http._tcp.local.") .
  * @param[in] aName                 The service labels (e.g., "_http._tcp.local.").
+ * @param[in] aSubtypeLabels        The service subtypes labels (e.g., "_sub1.http._tcp.local.").
+ * @param[in] aNumSubtypesEntries   Number of entries in the @p aSubtypeLabels array.
  * @param[in] aPort                 The service port number.
  * @param[in] aTxtEntries           A pointer to an array containing TXT entries (e.g., ["VAL1=1", "VAL2=2"])
  *                                  (`mNumTxtEntries` gives num of entries).
@@ -158,6 +160,8 @@ otError otMdnsServerSetHostName(otInstance *aInstance, const char *aHostName);
 otError otMdnsServerAddService(otInstance          *aInstance,
                                const char          *aInstanceName,
                                const char          *aName,
+                               const char         **aSubtypeLabels,
+                               uint8_t              aNumSubtypesEntries,
                                uint16_t             aPort,
                                const otDnsTxtEntry *aTxtEntries,
                                uint8_t              mNumTxtEntries);
