@@ -676,6 +676,7 @@ private:
             void               ClearValidLifetime(void) { mValidLifetime = 0; }
             TimeMilli          GetExpireTime(void) const;
             TimeMilli          GetStaleTime(void) const;
+            TimeMilli          GetStaleTimeNoRa(void) const;
             RoutePreference    GetPreference(void) const;
             bool               operator==(const Entry &aOther) const;
             bool               Matches(const Matcher &aMatcher) const;

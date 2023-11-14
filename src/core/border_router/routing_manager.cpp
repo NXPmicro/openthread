@@ -1853,18 +1853,16 @@ TimeMilli RoutingManager::DiscoveredPrefixTable::Entry::GetStaleTime(void) const
     return mLastUpdateTime + TimeMilli::SecToMsec(delay);
 }
 
+TimeMilli RoutingManager::DiscoveredPrefixTable::Entry::GetStaleTimeNoRa(void) const
+{
+    return mLastUpdateTime + CalculateExpireDelay(GetPreferredLifetime());
+}
+
 bool RoutingManager::DiscoveredPrefixTable::Entry::IsDeprecated(void) const
 {
     OT_ASSERT(IsOnLinkPrefix());
 
-    if (GetPreferredLifetime() == 0xffffffff)
-    {
-        return false;
-    }
-    else
-    {
-        return mLastUpdateTime + TimeMilli::SecToMsec(GetPreferredLifetime()) <= TimerMilli::GetNow();
-    }
+    return mLastUpdateTime + CalculateExpireDelay(GetPreferredLifetime()) <= TimerMilli::GetNow();
 }
 
 RoutingManager::RoutePreference RoutingManager::DiscoveredPrefixTable::Entry::GetPreference(void) const
@@ -3252,7 +3250,10 @@ void RoutingManager::PdPrefixManager::WithdrawPrefix(void)
     mPrefix.Clear();
     mTimer.Stop();
 
-    Get<RoutingManager>().ScheduleRoutingPolicyEvaluation(kImmediately);
+    if (Get<RoutingManager>().IsRunning())
+    {
+        Get<RoutingManager>().ScheduleRoutingPolicyEvaluation(kImmediately);
+    }
 
 exit:
     return;
@@ -3324,7 +3325,7 @@ void RoutingManager::PdPrefixManager::ProcessDhcpPdPrefix(const PrefixTableEntry
 exit:
     if (HasPrefix())
     {
-        mTimer.FireAt(mPrefix.GetStaleTime());
+        mTimer.FireAt(mPrefix.GetStaleTimeNoRa());
     }
     else
     {
