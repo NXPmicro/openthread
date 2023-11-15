@@ -481,6 +481,8 @@ Error Server::AppendSrvRecord(Message          &aMessage,
     {
         srvRecord.SetCacheFlushBit();
     }
+#else
+    OT_UNUSED_VARIABLE(aIsUniqueRR);
 #endif
 
     char tmpInstName[100];
@@ -527,6 +529,8 @@ Error Server::AppendAaaaRecord(Message            &aMessage,
     {
         aaaaRecord.SetCacheFlushBit();
     }
+#else
+    OT_UNUSED_VARIABLE(aIsUniqueRR);
 #endif
 
     char tmpHostName[100];
@@ -668,6 +672,8 @@ Error Server::AppendTxtRecord(Message          &aMessage,
     {
         txtRecord.SetCacheFlushBit();
     }
+#else
+    OT_UNUSED_VARIABLE(aIsUniqueRR);
 #endif
     txtRecord.SetTtl(aTtl);
     txtRecord.SetLength(aTxtLength > 0 ? aTxtLength : sizeof(kEmptyTxt));
