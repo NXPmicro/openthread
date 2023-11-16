@@ -42,8 +42,10 @@
 
 #include "common/locator.hpp"
 #include "common/non_copyable.hpp"
+#if OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE
 #include "common/heap_allocatable.hpp"
 #include "common/linked_list.hpp"
+#endif
 
 namespace ot {
 
@@ -216,6 +218,7 @@ private:
     void *mContext;
 };
 
+#if OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE
 /**
  * Defines a generic tasklet that is used to execute a callback function from the context of the OpenThread task
  *
@@ -283,6 +286,7 @@ public:
 
     LinkedList<InternalContext> mEventList;
 };
+#endif /*OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE*/
 
 /**
  * @}

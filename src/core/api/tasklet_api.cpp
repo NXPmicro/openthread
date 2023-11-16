@@ -50,6 +50,7 @@ exit:
     return;
 }
 
+#if OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE
 otError otTaskletExecute(otInstance *aInstance, otTaskletCb callback, void *context)
 {
     Error error = kErrorNone;
@@ -59,6 +60,7 @@ otError otTaskletExecute(otInstance *aInstance, otTaskletCb callback, void *cont
 exit:
     return error;
 }
+#endif /*OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE*/
 
 bool otTaskletsArePending(otInstance *aInstance)
 {

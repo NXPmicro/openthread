@@ -51,6 +51,7 @@ extern "C" {
  *
  */
 
+#if OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE
 /**
  * Callback function set to execute from the context of the OpenThread task
  *
@@ -58,14 +59,6 @@ extern "C" {
  *
  */
 typedef void (*otTaskletCb)(void *aContext);
-
-/**
- * Run all queued OpenThread tasklets at the time this is called.
- *
- * @param[in] aInstance A pointer to an OpenThread instance.
- *
- */
-void otTaskletsProcess(otInstance *aInstance);
 
 /**
  * Use the generic tasklet defined in the OpenThread instance to execute a callback function in
@@ -83,6 +76,15 @@ void otTaskletsProcess(otInstance *aInstance);
  *
  */
 otError otTaskletExecute(otInstance *aInstance, otTaskletCb callback, void *context);
+#endif /*OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE*/
+
+/**
+ * Run all queued OpenThread tasklets at the time this is called.
+ *
+ * @param[in] aInstance A pointer to an OpenThread instance.
+ *
+ */
+void otTaskletsProcess(otInstance *aInstance);
 
 /**
  * Indicates whether or not OpenThread has tasklets pending.

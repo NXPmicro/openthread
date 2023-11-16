@@ -94,6 +94,7 @@ void Tasklet::Scheduler::ProcessQueuedTasklets(void)
     }
 }
 
+#if OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE
 void GenericTasklet::HandleGenericTasklet(Tasklet &aTasklet) 
 {
     GenericTasklet *currentTasklet = static_cast<GenericTasklet *>(&aTasklet);
@@ -140,5 +141,6 @@ Error GenericTasklet::InternalContext::Init(GenericTasklet::TaskletCallback aCal
     mNext = nullptr;
     return kErrorNone;
 }
+#endif /*OPENTHREAD_CONFIG_GENERIC_TASKLET_ENABLE*/
 
 } // namespace ot
