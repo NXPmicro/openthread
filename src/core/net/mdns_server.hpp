@@ -58,6 +58,10 @@ struct otMdnsService
 {
 };
 
+struct otMdnsServiceSubTypeEntry
+{
+};
+
 namespace ot {
 namespace Dns {
 namespace ServiceDiscovery {
@@ -297,7 +301,9 @@ public:
         friend class LinkedListEntry<Service>;
 
     public:
-        class SubTypeEntry : public Heap::Allocatable<SubTypeEntry>, public LinkedListEntry<SubTypeEntry>
+        class SubTypeEntry : public otMdnsServiceSubTypeEntry,
+                             public Heap::Allocatable<SubTypeEntry>,
+                             public LinkedListEntry<SubTypeEntry>
         {
             friend class Heap::Allocatable<SubTypeEntry>;
             friend class LinkedListEntry<SubTypeEntry>;
@@ -305,10 +311,12 @@ public:
         public:
             SubTypeEntry(const char *aName) { mInstanceName.Set(aName); }
             const char *GetName() { return mInstanceName.AsCString(); }
+            const char *GetName() const { return mInstanceName.AsCString(); }
             bool        Matches(const char *aInstanceName) const
             {
                 return StringMatch(aInstanceName, mInstanceName.AsCString(), kStringCaseInsensitiveMatch);
             }
+            Error GetServiceSubTypeLabel(char *aLabel, uint8_t aMaxSize) const;
 
         private:
             Heap::String  mInstanceName;
@@ -324,7 +332,7 @@ public:
             kAnnounced
         };
 
-         /**
+        /**
          * This is the destructor for `Service` object.
          *
          */
@@ -338,7 +346,7 @@ public:
          */
         void Free(void)
         {
-            for(SubTypeEntry &entry : mSubTypesList)
+            for (SubTypeEntry &entry : mSubTypesList)
             {
                 mSubTypesList.Remove(entry);
                 entry.Free();
@@ -436,6 +444,9 @@ public:
          *
          *
          */
+
+        const SubTypeEntry *GetNextSubTypeEntry(const MdnsServer::Service::SubTypeEntry *aPrevSubTypeEntry) const;
+
         bool Matches(ServiceUpdateId aId) const { return mId == aId; }
 
         void PushSubTypeEntry(SubTypeEntry &aEntry) { mSubTypesList.Push(aEntry); }
@@ -447,17 +458,17 @@ public:
         bool  MatchesServiceName(const char *aServiceName) const;
         bool  MatchesInstanceName(const char *aInstanceName) const;
 
-        Service        *mNext;
-        Heap::String    mServiceName;
-        Heap::String    mInstanceName;
-        Heap::Data      mTxtData;
-        uint16_t        mPriority;
-        uint16_t        mWeight;
-        uint16_t        mPort;
-        uint32_t        mTtl;
-        bool            mIsToBeAnnounced;
-        State           mState;
-        ServiceUpdateId mId;
+        Service                 *mNext;
+        Heap::String             mServiceName;
+        Heap::String             mInstanceName;
+        Heap::Data               mTxtData;
+        uint16_t                 mPriority;
+        uint16_t                 mWeight;
+        uint16_t                 mPort;
+        uint32_t                 mTtl;
+        bool                     mIsToBeAnnounced;
+        State                    mState;
+        ServiceUpdateId          mId;
         LinkedList<SubTypeEntry> mSubTypesList;
     };
 
@@ -533,10 +544,10 @@ public:
         static constexpr uint8_t  kMaxTxCount         = 2;
 
         Announcer(Instance &aInstance);
-        void     EnqueueAnnounceMessage(Message &aAnnounceMessage) { mAnnouncements.Enqueue(aAnnounceMessage); };
-        void     StartAnnouncing();
-        void     HandleTimer();
-        void     Stop();
+        void EnqueueAnnounceMessage(Message &aAnnounceMessage) { mAnnouncements.Enqueue(aAnnounceMessage); };
+        void StartAnnouncing();
+        void HandleTimer();
+        void Stop();
 
     private:
         using AnnouncerTimer = TimerMilliIn<MdnsServer::Announcer, &MdnsServer::Announcer::HandleTimer>;
@@ -672,8 +683,8 @@ private:
 
     static void HandleUdpReceive(void *aContext, otMessage *aMessage, const otMessageInfo *aMessageInfo);
     void        HandleUdpReceive(Message &aMessage, const Ip6::MessageInfo &aMessageInfo);
- #if MDNS_USE_TASKLET
-    void        HandleUdpReceive();
+#if MDNS_USE_TASKLET
+    void HandleUdpReceive();
 #endif
 
     Error    AllocateQuery(const Client::QueryInfo &aInfo, const char *aName, Message *&aQuery);
@@ -777,26 +788,26 @@ private:
     Error    PublishFromSrp(const otSrpServerHost *aHost);
     bool     AddressIsFromLocalSubnet(const Ip6::Address &srcAddr);
 
-    using RetryTimer         = TimerMilliIn<MdnsServer, &MdnsServer::HandleTimer>;
- #if MDNS_USE_TASKLET
-    using RxTask             = TaskletIn<MdnsServer, &MdnsServer::HandleUdpReceive>;
+    using RetryTimer = TimerMilliIn<MdnsServer, &MdnsServer::HandleTimer>;
+#if MDNS_USE_TASKLET
+    using RxTask = TaskletIn<MdnsServer, &MdnsServer::HandleUdpReceive>;
 #endif
     using OutstandingUpdateTask = TaskletIn<MdnsServer, &MdnsServer::OutstandingUpdateHandler>;
-    using MdnsProbingTask    = TaskletIn<MdnsServer, &MdnsServer::MdnsProbingHandler>;
-    using MdnsAnnouncingTask = TaskletIn<MdnsServer, &MdnsServer::MdnsAnnouncingHandler>;
+    using MdnsProbingTask       = TaskletIn<MdnsServer, &MdnsServer::MdnsProbingHandler>;
+    using MdnsAnnouncingTask    = TaskletIn<MdnsServer, &MdnsServer::MdnsAnnouncingHandler>;
 
     static const char kDefaultDomainName[];
     static const char kThreadDefaultDomainName[];
 
-    RetryTimer                    mTimer;
-    Ip6::Udp::Socket              mSocket;
-    MessageQueue                  mQueries;
-    MessageQueue                  mRxPktQueue;
-    State                         mState;
-    Heap::String                  mHostName;
-    Heap::Array<Ip6::Address>     mAddresses;
- #if MDNS_USE_TASKLET
-     RxTask                        mHandleUdpReceive;
+    RetryTimer                mTimer;
+    Ip6::Udp::Socket          mSocket;
+    MessageQueue              mQueries;
+    MessageQueue              mRxPktQueue;
+    State                     mState;
+    Heap::String              mHostName;
+    Heap::Array<Ip6::Address> mAddresses;
+#if MDNS_USE_TASKLET
+    RxTask mHandleUdpReceive;
 #endif
     LinkedList<Service>           mServices;
     Announcer                     mAnnouncer;
@@ -813,6 +824,7 @@ private:
 } // namespace Dns
 
 DefineCoreType(otMdnsService, Dns::ServiceDiscovery::MdnsServer::Service);
+DefineCoreType(otMdnsServiceSubTypeEntry, Dns::ServiceDiscovery::MdnsServer::Service::SubTypeEntry);
 
 } // namespace ot
 

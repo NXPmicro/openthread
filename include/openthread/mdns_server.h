@@ -64,6 +64,12 @@ extern "C" {
 typedef struct otMdnsService otMdnsService;
 
 /**
+ * This opaque type represents a Mdns service subtype entry.
+ *
+ */
+typedef struct otMdnsServiceSubTypeEntry otMdnsServiceSubTypeEntry;
+
+/**
  * The ID of a mDNS service update transaction on the mDNS Server.
  *
  */
@@ -315,6 +321,35 @@ uint16_t otMdnsServerServiceGetPort(const otMdnsService *aService);
  */
 const uint8_t *otMdnsServerServiceGetTxtData(const otMdnsService *aService, uint16_t *aDataLength);
 
+/**
+ * This function gets the next subtype entry of the given service.
+ *
+ * @param[in] aInstance                 A pointer to the OpenThread instance.
+ * @param[in] aService                  Pointer to current service.
+ * @param[in] aSubTypeEntry             Pointer to current subtypeEntry or NULL for starting from first
+ *
+ * @retval OT_ERROR_NONE                The subtype was returned successfully.
+ * @retval OT_ERROR_NOT_FOUND           The subtype could not be found in the list.
+ */
+const otMdnsServiceSubTypeEntry *otMdnsServerServiceGetNextSubTypeEntry(const otMdnsService *aService, const otMdnsServiceSubTypeEntry *aSubTypeEntry);
+
+/**
+ * Gets the sub-type label from service name.
+ *
+ * The full service name for a sub-type service follows "<sub-label>._sub.<service-labels>.<domain>.". This function
+ * copies the `<sub-label>` into the @p aLabel buffer.
+ *
+ * The @p aLabel is ensured to always be null-terminated after returning even in case of failure.
+ * @param[in]  aEntry             A pointer to the current sub-type entry in service sub-type list.
+ * @param[out] aLabel             A pointer to a buffer to copy the sub-type label name into.
+ * @param[in]  aMaxSize           Maximum size of @p aLabel buffer.
+ *
+ * @retval OT_ERROR_NONE          @p aLabel was updated successfully.
+ * @retval OT_ERROR_NO_BUFS       The sub-type label could not fit in @p aLabel buffer (number of chars from label
+ *                                that could fit are copied in @p aLabel ensuring it is null-terminated).
+ *
+ */
+otError otMdnsServerServiceGetServiceSubTypeLabel(const otMdnsServiceSubTypeEntry *aEntry, char *aLabel, uint8_t aMaxSize);
 /**
  * @}
  *

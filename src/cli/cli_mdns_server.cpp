@@ -113,16 +113,36 @@ template <> otError MdnsServer::Process<Cmd("service")>(Arg aArgs[])
     if (aArgs[0].IsEmpty())
     {
         const otMdnsService *service = nullptr;
+        const otMdnsServiceSubTypeEntry *subTypeEntry = nullptr;
+
+        OutputLine(kIndentSize, "host: %s", otMdnsServerGetHostName(GetInstancePtr()));
+        OutputFormat(kIndentSize, "addresses: ");
+        OutputHostAddresses();
+        OutputNewLine();
+        OutputNewLine();
 
         while ((service = otMdnsServerGetNextService(GetInstancePtr(), service, nullptr, nullptr)) != nullptr)
         {
             const char    *instanceName = otMdnsServerServiceGetInstanceName(service);
-            const char    *serviceName  = otMdnsServerServiceGetServiceName(service);
-            uint16_t       port         = otMdnsServerServiceGetPort(service);
             uint16_t       txtDataLength;
             const uint8_t *txtData;
+            bool           hasSubType = false;
 
-            OutputFormat("%s %s %d", instanceName, serviceName, port);
+            OutputLine("%s", instanceName);
+
+            OutputFormat(kIndentSize, "subtypes: ");
+
+            while ((subTypeEntry = otMdnsServerServiceGetNextSubTypeEntry(service, subTypeEntry)) != nullptr)
+            {
+                char subLabel[OT_DNS_MAX_LABEL_SIZE];
+                IgnoreError(otMdnsServerServiceGetServiceSubTypeLabel(subTypeEntry, subLabel, sizeof(subLabel)));
+                OutputFormat("%s%s", hasSubType ? "," : "", subLabel);
+                hasSubType = true;
+            }
+
+            OutputLine(hasSubType ? "" : "(null)");
+
+            OutputLine(kIndentSize, "port: %u", otMdnsServerServiceGetPort(service));
 
             txtData = otMdnsServerServiceGetTxtData(service, &txtDataLength);
             if (txtDataLength == 0)
@@ -131,7 +151,7 @@ template <> otError MdnsServer::Process<Cmd("service")>(Arg aArgs[])
                 continue;
             }
 
-            OutputFormat(" TXT: ");
+            OutputFormat(kIndentSize, "TXT: ");
             OutputDnsTxtData(txtData, txtDataLength);
             OutputNewLine();
         }
@@ -214,6 +234,26 @@ template <> otError MdnsServer::Process<Cmd("service")>(Arg aArgs[])
 
 exit:
     return error;
+}
+
+void MdnsServer::OutputHostAddresses()
+{
+    const otIp6Address *addresses;
+    uint8_t             addressesNum;
+
+    addresses = otMdnsServerGetAddresses(GetInstancePtr(), &addressesNum);
+
+    OutputFormat("[");
+    for (uint8_t i = 0; i < addressesNum; ++i)
+    {
+        if (i != 0)
+        {
+            OutputFormat(", ");
+        }
+
+        OutputIp6Address(addresses[i]);
+    }
+    OutputFormat("]");
 }
 
 template <> otError MdnsServer::Process<Cmd("start")>(Arg aArgs[])

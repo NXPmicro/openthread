@@ -73,9 +73,12 @@ public:
     otError Process(Arg aArgs[]);
 
 private:
-    using Command = CommandEntry<MdnsServer>;
+    static constexpr uint8_t kIndentSize = 4;
+    using Command                        = CommandEntry<MdnsServer>;
 
     template <CommandId kCommandId> otError Process(Arg aArgs[]);
+
+    void OutputHostAddresses(void);
 };
 
 } // namespace Cli

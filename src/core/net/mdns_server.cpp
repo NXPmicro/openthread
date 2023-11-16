@@ -1676,6 +1676,42 @@ bool MdnsServer::Service::MatchesInstanceName(const char *aInstanceName) const
     return StringMatch(mInstanceName.AsCString(), aInstanceName, kStringCaseInsensitiveMatch);
 }
 
+const MdnsServer::Service::SubTypeEntry *MdnsServer::Service::GetNextSubTypeEntry(
+    const MdnsServer::Service::SubTypeEntry *aPrevSubTypeEntry) const
+{
+    const MdnsServer::Service::SubTypeEntry *subTypeEntry =
+        (aPrevSubTypeEntry == nullptr) ? mSubTypesList.GetHead() : aPrevSubTypeEntry->GetNext();
+
+    return subTypeEntry;
+}
+
+Error MdnsServer::Service::SubTypeEntry::GetServiceSubTypeLabel(char *aLabel, uint8_t aMaxSize) const
+{
+    Error       error       = kErrorNone;
+    const char *serviceName = GetName();
+    const char *subServiceName;
+    uint8_t     labelLength;
+
+    memset(aLabel, 0, aMaxSize);
+
+    subServiceName = StringFind(serviceName, kServiceSubTypeLabel, kStringCaseInsensitiveMatch);
+    OT_ASSERT(subServiceName != nullptr);
+
+    if (subServiceName - serviceName < aMaxSize)
+    {
+        labelLength = static_cast<uint8_t>(subServiceName - serviceName);
+    }
+    else
+    {
+        labelLength = aMaxSize - 1;
+        error       = kErrorNoBufs;
+    }
+
+    memcpy(aLabel, serviceName, labelLength);
+
+    return error;
+}
+
 Error MdnsServer::Service::Init(const char *aServiceName, const char *aInstanceName, uint16_t aPort, uint16_t aId)
 {
     mServiceName.Set(aServiceName);

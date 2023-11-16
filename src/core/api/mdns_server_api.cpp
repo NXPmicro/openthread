@@ -170,4 +170,17 @@ const uint8_t *otMdnsServerServiceGetTxtData(const otMdnsService *aService, uint
     return AsCoreType(aService).GetTxtData();
 }
 
+const otMdnsServiceSubTypeEntry *otMdnsServerServiceGetNextSubTypeEntry(const otMdnsService             *aService,
+                                                                        const otMdnsServiceSubTypeEntry *aSubTypeEntry)
+{
+    return AsCoreType(aService).GetNextSubTypeEntry(AsCoreTypePtr(aSubTypeEntry));
+}
+
+otError otMdnsServerServiceGetServiceSubTypeLabel(const otMdnsServiceSubTypeEntry *aEntry,
+                                                  char                            *aLabel,
+                                                  uint8_t                          aMaxSize)
+{
+    return AsCoreType(aEntry).GetServiceSubTypeLabel(aLabel, aMaxSize);
+}
+
 #endif // OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE
