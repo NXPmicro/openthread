@@ -188,4 +188,14 @@ otError otMdnsServerServiceGetServiceSubTypeLabel(const otMdnsServiceSubTypeEntr
     return AsCoreType(aEntry).GetServiceSubTypeLabel(aLabel, aMaxSize);
 }
 
+void otMdnsServerMarkServiceForRemoval(otInstance *aInstance, const char *aInstanceName, const char *aServiceName)
+{
+    AsCoreType(aInstance).Get<Dns::ServiceDiscovery::MdnsServer>().MarkServiceForRemoval(aInstanceName, aServiceName);
+}
+
+void otMdnsServerRemoveMarkedServices(otInstance *aInstance)
+{
+    AsCoreType(aInstance).Get<Dns::ServiceDiscovery::MdnsServer>().RemoveMarkedServices();
+}
+
 #endif // OPENTHREAD_CONFIG_MDNS_SERVER_ENABLE

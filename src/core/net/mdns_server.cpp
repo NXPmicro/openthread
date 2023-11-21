@@ -1237,71 +1237,105 @@ Error MdnsServer::AddService(const char          *aInstanceName,
                              const otDnsTxtEntry *aTxtEntries,
                              uint8_t              mNumTxtEntries)
 {
-    Service           *service = nullptr;
-    Error              error   = kErrorNone;
-    Prober *prober = nullptr;
+    Service *service = nullptr;
+    Error    error   = kErrorNone;
+    Prober  *prober  = nullptr;
 
     // Ensure the same service does not exist already.
-    VerifyOrExit(FindNextService(nullptr, aServiceName, aInstanceName) == nullptr, error = kErrorFailed);
+    service = FindService(aServiceName, aInstanceName);
 
-    service = Service::AllocateAndInit(aServiceName, aInstanceName, aPort, AllocateId());
-    VerifyOrExit(service != nullptr, error = kErrorFailed);
-
-    if (aTxtEntries != nullptr)
+    if (service)
     {
-        if (aTxtEntries->mKey)
+        if (!service->IsMarkedAsDeleted())
         {
-            uint8_t  txtBuffer[kTXTMaxBufferSize] = {0};
-            uint32_t txtBufferOffset              = 0;
-
-            for (uint32_t i = 0; i < mNumTxtEntries; i++)
-            {
-                uint32_t keySize = strlen(aTxtEntries[i].mKey);
-                // add TXT entry len + 1 is for '='
-                *(txtBuffer + txtBufferOffset++) = keySize + aTxtEntries[i].mValueLength + 1;
-
-                // add TXT entry key
-                memcpy(txtBuffer + txtBufferOffset, aTxtEntries[i].mKey, keySize);
-                txtBufferOffset += keySize;
-
-                // add TXT entry value if pointer is not null, if pointer is null it means we have bool value
-                if (aTxtEntries[i].mValue)
-                {
-                    *(txtBuffer + txtBufferOffset++) = '=';
-                    memcpy(txtBuffer + txtBufferOffset, aTxtEntries[i].mValue, aTxtEntries[i].mValueLength);
-                    txtBufferOffset += aTxtEntries[i].mValueLength;
-                }
-            }
-            service->mTxtData.SetFrom(txtBuffer, txtBufferOffset);
+            ExitNow(error = kErrorDuplicated);
         }
         else
         {
-            service->mTxtData.SetFrom(aTxtEntries->mValue, aTxtEntries->mValueLength);
+            service->UnmarkAsDeleted();
+
+            if (UpdateServiceContent(service, aPort, aTxtEntries, mNumTxtEntries) == kErrorNone)
+            {
+                Announcer *announcer = ReturnAnnouncingInstanceContainingServiceId(service->GetServiceUpdateId());
+                if (announcer != nullptr)
+                {
+                    announcer->Stop();
+                    AnnounceHostAndServices(*announcer);
+                }
+                else
+                {
+                    announcer = AllocateAnnouncer(service->GetServiceUpdateId());
+                    VerifyOrExit(announcer != nullptr, error = kErrorNoBufs);
+                    AnnounceHostAndServices(*announcer);
+                }
+            }
+        }
+    }
+    else
+    {
+        service = Service::AllocateAndInit(aServiceName, aInstanceName, aPort, AllocateId());
+        VerifyOrExit(service != nullptr, error = kErrorFailed);
+
+        if (aTxtEntries != nullptr)
+        {
+            if (aTxtEntries->mKey)
+            {
+                uint8_t  txtBuffer[kTXTMaxBufferSize] = {0};
+                uint32_t txtBufferOffset              = 0;
+
+                for (uint32_t i = 0; i < mNumTxtEntries; i++)
+                {
+                    uint32_t keySize = strlen(aTxtEntries[i].mKey);
+                    // add TXT entry len + 1 is for '='
+                    *(txtBuffer + txtBufferOffset++) = keySize + aTxtEntries[i].mValueLength + 1;
+
+                    // add TXT entry key
+                    memcpy(txtBuffer + txtBufferOffset, aTxtEntries[i].mKey, keySize);
+                    txtBufferOffset += keySize;
+
+                    // add TXT entry value if pointer is not null, if pointer is null it means we have bool value
+                    if (aTxtEntries[i].mValue)
+                    {
+                        *(txtBuffer + txtBufferOffset++) = '=';
+                        memcpy(txtBuffer + txtBufferOffset, aTxtEntries[i].mValue, aTxtEntries[i].mValueLength);
+                        txtBufferOffset += aTxtEntries[i].mValueLength;
+                    }
+                }
+                service->mTxtData.SetFrom(txtBuffer, txtBufferOffset);
+            }
+            else
+            {
+                service->mTxtData.SetFrom(aTxtEntries->mValue, aTxtEntries->mValueLength);
+            }
+        }
+
+        mServices.Push(*service);
+
+        for (uint8_t index = 0; index < aNumSubtypesEntries; index++)
+        {
+            String<Name::kMaxNameSize> instanceName;
+            instanceName.Append("%s%s%s", aSubtypeLabels[index], kServiceSubTypeLabel, aServiceName);
+
+            Service::SubTypeEntry *entry = Service::SubTypeEntry::Allocate(instanceName.AsCString());
+            VerifyOrExit(entry != nullptr, error = kErrorNoBufs);
+            service->PushSubTypeEntry(*entry);
+        }
+
+        if (GetState() == kStateRunning)
+        {
+            prober = AllocateProber(true, nullptr, service->GetServiceUpdateId());
+            VerifyOrExit(prober != nullptr, error = kErrorNoBufs);
+            PublishHostAndServices(prober);
         }
     }
 
-    mServices.Push(*service);
-
-    for (uint8_t index = 0; index < aNumSubtypesEntries; index++)
-    {
-        String<Name::kMaxNameSize> instanceName;
-        instanceName.Append("%s%s%s", aSubtypeLabels[index], kServiceSubTypeLabel, aServiceName);
-
-        Service::SubTypeEntry *entry = Service::SubTypeEntry::Allocate(instanceName.AsCString());
-        VerifyOrExit(entry != nullptr, error = kErrorNoBufs);
-        service->PushSubTypeEntry(*entry);
-    }
-
-    if (GetState() == kStateRunning)
-    {
-        prober = AllocateProber(true, nullptr, service->GetServiceUpdateId());
-        VerifyOrExit(prober != nullptr, error = kErrorNoBufs);
-        PublishHostAndServices(prober);
-    }
-
 exit:
-    if(error != kErrorNone && service != nullptr)
+    if (error != kErrorNone && service != nullptr)
     {
+        if(FindService(service->GetServiceName(), service->GetInstanceName()) != nullptr)
+        {
+            mServices.Remove(*service);
+        }
         service->Free();
     }
     return error;
@@ -1420,8 +1454,6 @@ Error MdnsServer::RemoveService(const char *aInstanceName, const char *aServiceN
 {
     Service       *service   = nullptr;
     Error          error     = kErrorNone;
-    Prober        *prober    = nullptr;
-    Announcer     *announcer = nullptr;
     Service::State state;
 
     VerifyOrExit((service = FindService(aServiceName, aInstanceName)) != nullptr, error = kErrorNotFound);
@@ -1432,31 +1464,47 @@ Error MdnsServer::RemoveService(const char *aInstanceName, const char *aServiceN
     {
         SuccessOrExit(error = AnnounceServiceGoodbye(*service));
     }
+    else
+    {
+        RemoveServiceFromProbeOrAnnounceInstance(service, state);
+    }
+
+exit:
+    if (service)
+    {
+        mServices.Remove(*service);
+        service->Free();
+    }
+    return error;
+}
+
+void MdnsServer::RemoveServiceFromProbeOrAnnounceInstance(Service *aService, Service::State aState)
+{
+    Prober    *prober    = nullptr;
+    Announcer *announcer = nullptr;
 
     // check if this service is included in an announce procedure
-    else if(state == Service::State::kAnnouncing)
+    if(aState == Service::State::kAnnouncing)
     {
-        announcer = ReturnAnnouncingInstanceContainingServiceId(service->GetServiceUpdateId());
+        announcer = ReturnAnnouncingInstanceContainingServiceId(aService->GetServiceUpdateId());
         if(announcer != nullptr)
         {
             announcer->Stop();
             if(announcer->GetId())
             {
                 RemoveAnnouncingInstance(announcer->GetId());
-                ExitNow();
             }
             else
             {
                 // recreate the announce message, and restart
-                UpdateExistingAnnouncerDataEntries(*announcer, *service);
-                ExitNow();
+                UpdateExistingAnnouncerDataEntries(*announcer, *aService);
             }
         }
     }
     // check if this service is included in a probe procedure
     else
     {
-        prober = ReturnProbingInstanceContainingServiceId(service->GetServiceUpdateId());
+        prober = ReturnProbingInstanceContainingServiceId(aService->GetServiceUpdateId());
         if(prober != nullptr)
         {
             /*Remove service is called from 2 different application flows:
@@ -1471,24 +1519,52 @@ Error MdnsServer::RemoveService(const char *aInstanceName, const char *aServiceN
             if(prober->GetId())
             {
                 RemoveProbingInstance(prober->GetId());
-                ExitNow();
             }
             else
             {
                 // recreate the probing message and restart
-                UpdateExistingProberDataEntries(*prober, *service);
-                ExitNow();
+                UpdateExistingProberDataEntries(*prober, *aService);
             }
         }
     }
+}
 
-exit:
-    if (service)
+void MdnsServer::MarkServiceForRemoval(const char *aInstanceName, const char *aServiceName)
+{
+    if (aInstanceName == nullptr)
     {
-        mServices.Remove(*service);
-        service->Free();
+        for (Service &service : mServices)
+        {
+            if (service.MatchesServiceName(aServiceName))
+            {
+                RemoveServiceFromProbeOrAnnounceInstance(&service, service.GetState());
+                service.MarkAsDeleted();
+            }
+        }
     }
-    return error;
+    else
+    {
+        Service *service = FindService(aServiceName, aInstanceName);
+        if (service != nullptr)
+        {
+            RemoveServiceFromProbeOrAnnounceInstance(service, service->GetState());
+            service->MarkAsDeleted();
+        }
+    }
+}
+
+void MdnsServer::RemoveMarkedServices(void)
+{
+    AnnounceMarkedAsDeletedServicesGoodbye();
+
+    for(Service &service : mServices)
+    {
+        if(service.IsMarkedAsDeleted())
+        {
+            mServices.Remove(service);
+            service.Free();
+        }
+    }
 }
 
 Error MdnsServer::AnnounceServiceGoodbye(Service &aService)
@@ -1526,6 +1602,50 @@ exit:
     }
     FreeMessageOnError(message, error);
     return error;
+}
+
+Error MdnsServer::AnnounceMarkedAsDeletedServicesGoodbye()
+{
+    NameCompressInfo compressInfo(kDefaultDomainName);
+    Message         *message = nullptr;
+    Header           header;
+    Service         *service;
+    Error            error = kErrorNone;
+
+    Announcer *announcer = Announcer::Allocate(GetInstance());
+    VerifyOrExit(announcer != nullptr, error = kErrorNoBufs);
+
+    VerifyOrExit((message = NewPacket()) != nullptr, error = kErrorNoBufs);
+
+    header.SetType(Header::kTypeResponse);
+
+    for (service = mServices.GetHead(); service != nullptr; service = service->GetNext())
+    {
+        if(service->IsMarkedAsDeleted())
+        {
+            SuccessOrExit(error = Server::AppendPtrRecord(*message, service->GetServiceName(), service->GetInstanceName(),
+                                                        0, compressInfo));
+            Server::IncResourceRecordCount(header, false);
+        }
+    }
+
+   message->Write(0, header);
+
+   VerifyOrExit(message->GetLength() > sizeof(Header), error = kErrorDrop);
+
+   announcer->EnqueueAnnounceMessage(*message);
+   announcer->StartAnnouncing();
+
+exit:
+   if (error != kErrorNone)
+   {
+        if (announcer)
+        {
+            announcer->Free();
+        }
+   }
+   FreeMessageOnError(message, error);
+   return error;
 }
 
 Error MdnsServer::AnnounceHostGoodbye()
@@ -1729,12 +1849,13 @@ Error MdnsServer::Service::Init(const char *aServiceName, const char *aInstanceN
     mServiceName.Set(aServiceName);
     mInstanceName.Set(aInstanceName);
 
-    mPriority = 0;
-    mWeight   = 0;
-    mPort     = aPort;
-    mTtl      = kDefaultTtlWithHostName;
-    mState    = kJustAdded;
-    mId       = aId;
+    mPriority          = 0;
+    mWeight            = 0;
+    mPort              = aPort;
+    mTtl               = kDefaultTtlWithHostName;
+    mState             = kJustAdded;
+    mId                = aId;
+    mIsMarkedAsDeleted = false;
 
     return kErrorNone;
 }

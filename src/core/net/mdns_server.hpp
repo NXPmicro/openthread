@@ -270,6 +270,19 @@ public:
     Error RemoveService(const char *aInstanceName, const char *aServiceName);
 
     /**
+     * This method marks a service or multiple services matching a given service name to be deleted,
+     * not immediately removing it from the mDNS host's service list.
+     * @param[in] aInstanceName         The service instance name label (e.g., "ins._http._tcp.local.") .
+     * @param[in] aServiceName          The service labels (e.g., "_http._tcp.local.").
+     */
+    void MarkServiceForRemoval(const char *aInstanceName, const char *aServiceName);
+
+    /**
+     * This method immediately removes previous marked as deleted services from the mDNS host's service list.
+     */
+    void RemoveMarkedServices(void);
+
+    /**
      * This method is used to provide the next service in the Service list provided the previous service
      *
      * @param[in] aPrevService          Pointer to the previous service in list or nullptr
@@ -482,6 +495,20 @@ public:
         void PushSubTypeEntry(SubTypeEntry &aEntry) { mSubTypesList.Push(aEntry); }
 
         LinkedList<SubTypeEntry> GetSubTypeList(void) { return mSubTypesList; }
+        /**
+         * This method returns if the Service instance is marked as deleted or not.
+         */
+        bool IsMarkedAsDeleted() { return mIsMarkedAsDeleted; }
+
+        /**
+         * This method marks the Service instance as deleted.
+         */
+        void MarkAsDeleted() { mIsMarkedAsDeleted = true; }
+
+        /**
+         * This method marks the Service instance as not deleted.
+         */
+        void UnmarkAsDeleted() { mIsMarkedAsDeleted = false; }
 
     private:
         Error Init(const char *aServiceName, const char *aInstanceName, uint16_t aPort, uint16_t aId);
@@ -497,6 +524,7 @@ public:
         uint16_t                 mPort;
         uint32_t                 mTtl;
         bool                     mIsToBeAnnounced;
+        bool                     mIsMarkedAsDeleted;
         State                    mState;
         ServiceUpdateId          mId;
         LinkedList<SubTypeEntry> mSubTypesList;
@@ -507,6 +535,12 @@ public:
     const Service *FindNextService(const MdnsServer::Service *aPrevService,
                                    const char                *aServiceName  = nullptr,
                                    const char                *aInstanceName = nullptr) const;
+    /**
+     * This method removes a service from a probe or announce instance, if found.
+     * @param[in] aService              The service instance.
+     * @param[in] aState                The service's current status (probing, announcing, or announced)
+     */
+    void RemoveServiceFromProbeOrAnnounceInstance(Service *aService, Service::State aState);
 
     class Announcer : public InstanceLocator, public LinkedListEntry<Announcer>, public Heap::Allocatable<Announcer>
     {
@@ -736,6 +770,7 @@ private:
     void  HandleProberFinished(const Prober &aProber, Error aError, MdnsServerProbingContext *aContext = nullptr);
     void  HandleAnnouncerFinished(const Announcer &aAnnouncer);
     Error AnnounceServiceGoodbye(Service &aService);
+    Error AnnounceMarkedAsDeletedServicesGoodbye();
     Error AnnounceHostGoodbye();
     Error AnnounceSrpHostGoodbye(otSrpServerServiceUpdateId aId, const otSrpServerHost *aHost);
     Error AppendServiceInfo(Message &aMessage, Header &aHeader, Service &aService, NameCompressInfo &aCompressInfo);

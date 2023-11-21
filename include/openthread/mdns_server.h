@@ -345,6 +345,22 @@ uint16_t otMdnsServerServiceGetPort(const otMdnsService *aService);
  */
 const uint8_t *otMdnsServerServiceGetTxtData(const otMdnsService *aService, uint16_t *aDataLength);
 
+
+/**
+ * This function marks a specific service instance or a list of services matching a given service name to be deleted.
+ *
+ * @param[in] aInstance             A pointer to the OpenThread instance.
+ * @param[in] aInstanceName         The service instance name label (e.g., "ins._http._tcp.local.") .
+ * @param[in] aName                 The service labels (e.g., "_http._tcp.local.").
+ *
+ */
+void otMdnsServerMarkServiceForRemoval(otInstance *aInstance, const char *aInstanceName, const char *aServiceName);
+
+/**
+ * This function removes previous marked as deleted services from the mDNS host's service list.
+ */
+void otMdnsServerRemoveMarkedServices(otInstance *aInstance);
+
 /**
  * This function gets the next subtype entry of the given service.
  *
