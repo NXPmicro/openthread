@@ -715,6 +715,30 @@ private:
         Client::ServiceCallback mServiceCallback;
     };
 
+    struct KnownAnswerEntry : public LinkedListEntry<KnownAnswerEntry>, public Heap::Allocatable<KnownAnswerEntry>
+    {
+        friend class LinkedListEntry<KnownAnswerEntry>;
+        friend class Heap::Allocatable<KnownAnswerEntry>;
+
+    public:
+        Error Init(char *aServiceName, char *aInstanceName, ResourceRecord &aRecord);
+        ResourceRecord GetRecord() { return mRecord; }
+        const char    *GetServiceName() { return mServiceName.AsCString(); }
+        const char    *GetInstanceName() { return mInstanceName.AsCString(); }
+        bool           Matches(const KnownAnswerEntry &aEntry) const
+        {
+            return StringMatch(mInstanceName.AsCString(), AsNonConst(aEntry).GetInstanceName(), kStringCaseInsensitiveMatch) &&
+                   StringMatch(mServiceName.AsCString(), AsNonConst(aEntry).GetServiceName(), kStringCaseInsensitiveMatch);
+        }
+
+    private:
+        ResourceRecord mRecord;
+        Heap::String           mInstanceName;
+        Heap::String           mServiceName;
+
+        KnownAnswerEntry *mNext;
+    };
+
     static void HandleUdpReceive(void *aContext, otMessage *aMessage, const otMessageInfo *aMessageInfo);
     void        HandleUdpReceive(Message &aMessage, const Ip6::MessageInfo &aMessageInfo);
 #if MDNS_USE_TASKLET
@@ -785,12 +809,21 @@ private:
                                   Message                  &aResponseMessage,
                                   Server::NameCompressInfo &aCompressInfo,
                                   bool                     &bUnicastResponse);
-    Header::Response ResolveQuestion(const char       *aName,
-                                     const Question   &aQuestion,
-                                     Header           &aResponseHeader,
-                                     Message          &aResponseMessage,
-                                     NameCompressInfo &aCompressInfo,
-                                     bool              aAdditional);
+    Header::Response ResolveQuestion(const char                   *aName,
+                                     const Question               &aQuestion,
+                                     Header                       &aResponseHeader,
+                                     Message                      &aResponseMessage,
+                                     NameCompressInfo             &aCompressInfo,
+                                     bool                          aAdditional,
+                                     LinkedList<KnownAnswerEntry> &aKnownAnswersList);
+
+    Header::Response ResolveQuestionBySrp(const char                   *aName,
+                                          const Question               &aQuestion,
+                                          Header                       &aResponseHeader,
+                                          Message                      &aResponseMessage,
+                                          NameCompressInfo             &aCompressInfo,
+                                          bool                          aAdditional,
+                                          LinkedList<KnownAnswerEntry> &aKnownAnswersList);
 
     static void SrpAdvertisingProxyHandler(otSrpServerServiceUpdateId aId,
                                            const otSrpServerHost     *aHost,
@@ -819,6 +852,8 @@ private:
     Prober    *AllocateProber(bool aProbeForHost, const otSrpServerHost *aHost, uint32_t aId);
     Error      UpdateExistingAnnouncerDataEntries(Announcer &aAnnouncer, Service &aService);
     Announcer *AllocateAnnouncer(uint32_t aId);
+    uint16_t    ReturnKnownAnswerOffsetFromQuery(const Header &aHeader, const Message &aMessage);
+    void        RemoveAllKnownAnswerEntries(void);
 
     using RetryTimer = TimerMilliIn<MdnsServer, &MdnsServer::HandleTimer>;
 #if MDNS_USE_TASKLET
@@ -844,6 +879,7 @@ private:
     LinkedList<Prober>            mProbingInstances;
     LinkedList<Announcer>         mAnnouncingInstances;
     Callback<MdnsProbingCallback> mCallback;
+    LinkedList<KnownAnswerEntry>  mReceivedKnownAnswers;
 };
 
 } // namespace ServiceDiscovery

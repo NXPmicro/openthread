@@ -693,17 +693,19 @@ Message *MdnsServer::FindQueryByName(const char *aName)
     return matchedQuery;
 }
 
-Header::Response MdnsServer::ResolveQuestion(const char       *aName,
-                                             const Question   &aQuestion,
-                                             Header           &aResponseHeader,
-                                             Message          &aResponseMessage,
-                                             NameCompressInfo &aCompressInfo,
-                                             bool              aAdditional)
+Header::Response MdnsServer::ResolveQuestion(const char                   *aName,
+                                             const Question               &aQuestion,
+                                             Header                       &aResponseHeader,
+                                             Message                      &aResponseMessage,
+                                             NameCompressInfo             &aCompressInfo,
+                                             bool                          aAdditional,
+                                             LinkedList<KnownAnswerEntry> &aKnownAnswersList)
 {
-    const Service   *service                  = nullptr;
-    uint16_t         qtype                    = aQuestion.GetType();
-    bool             needAdditionalAaaaRecord = false;
-    Header::Response responseCode             = Header::kResponseSuccess;
+    const Service    *service                  = nullptr;
+    uint16_t          qtype                    = aQuestion.GetType();
+    bool              needAdditionalAaaaRecord = false;
+    bool              shouldSuppressAnswer     = false;
+    Header::Response  responseCode             = Header::kResponseSuccess;
 
     bool serviceNameMatched = false;
 
@@ -737,6 +739,22 @@ Header::Response MdnsServer::ResolveQuestion(const char       *aName,
             (qtype == ResourceRecord::kTypeSrv || qtype == ResourceRecord::kTypeAny) && instanceNameMatched;
         bool txtQueryMatched =
             (qtype == ResourceRecord::kTypeTxt || qtype == ResourceRecord::kTypeAny) && instanceNameMatched;
+
+        for (KnownAnswerEntry &entry : aKnownAnswersList)
+        {
+            if (StringMatch(entry.GetServiceName(), service->GetServiceName(), kStringCaseInsensitiveMatch) &&
+                StringMatch(entry.GetInstanceName(), service->GetInstanceName(), kStringCaseInsensitiveMatch) &&
+                entry.GetRecord().GetTtl() > service->GetTtl() / 2)
+            {
+                shouldSuppressAnswer = true;
+                break;
+            }
+        }
+
+        if (shouldSuppressAnswer)
+        {
+            break;
+        }
 
         if (ptrQueryMatched || srvQueryMatched)
         {
@@ -810,6 +828,134 @@ exit:
     return responseCode;
 }
 
+Header::Response MdnsServer::ResolveQuestionBySrp(const char                   *aName,
+                                                  const Question               &aQuestion,
+                                                  Header                       &aResponseHeader,
+                                                  Message                      &aResponseMessage,
+                                                  NameCompressInfo             &aCompressInfo,
+                                                  bool                          aAdditional,
+                                                  LinkedList<KnownAnswerEntry> &aKnownAnswersList)
+{
+    Error                    error                = kErrorNone;
+    const Srp::Server::Host *host                 = nullptr;
+    TimeMilli                now                  = TimerMilli::GetNow();
+    uint16_t                 qtype                = aQuestion.GetType();
+    Header::Response         response             = Header::kResponseNameError;
+    bool                     shouldSuppressAnswer = false;
+    KnownAnswerEntry        *kaElement            = nullptr;
+
+    if(!aKnownAnswersList.IsEmpty())
+    {
+        kaElement = aKnownAnswersList.GetHead();
+    }
+
+    while ((host = Get<Server>().GetNextSrpHost(host)) != nullptr)
+    {
+        bool        needAdditionalAaaaRecord = false;
+        const char *hostName                 = host->GetFullName();
+
+        // Handle PTR/SRV/TXT/ANY query
+        if (qtype == ResourceRecord::kTypePtr || qtype == ResourceRecord::kTypeSrv ||
+            qtype == ResourceRecord::kTypeTxt || qtype == ResourceRecord::kTypeAny)
+        {
+            const Srp::Server::Service *service = nullptr;
+
+            while ((service = Get<Server>().GetNextSrpService(*host, service)) != nullptr)
+            {
+                uint32_t    instanceTtl         = TimeMilli::MsecToSec(service->GetExpireTime() - TimerMilli::GetNow());
+                const char *instanceName        = service->GetInstanceName();
+                char        convertedInstanceName[Dns::Name::kMaxNameSize];
+                char        convertedServiceName[Dns::Name::kMaxNameSize];
+                bool        serviceNameMatched  = service->MatchesServiceName(aName);
+                bool        instanceNameMatched = (!service->IsSubType() && service->MatchesInstanceName(aName));
+                bool        ptrQueryMatched =
+                    (qtype == ResourceRecord::kTypePtr || qtype == ResourceRecord::kTypeAny) && serviceNameMatched;
+                bool srvQueryMatched =
+                    (qtype == ResourceRecord::kTypeSrv || qtype == ResourceRecord::kTypeAny) && instanceNameMatched;
+                bool txtQueryMatched =
+                    (qtype == ResourceRecord::kTypeTxt || qtype == ResourceRecord::kTypeAny) && instanceNameMatched;
+
+                for (; kaElement != nullptr; kaElement = kaElement->GetNext())
+                {
+                    ConvertDomainName(convertedInstanceName, kaElement->GetInstanceName(), kDefaultDomainName,
+                                      Server::kDefaultDomainName);
+                    ConvertDomainName(convertedServiceName, kaElement->GetServiceName(), kDefaultDomainName,
+                                      Server::kDefaultDomainName);
+
+                    if (StringMatch(convertedServiceName, service->GetServiceName(), kStringCaseInsensitiveMatch) &&
+                        StringMatch(convertedInstanceName, service->GetInstanceName(), kStringCaseInsensitiveMatch) &&
+                        kaElement->GetRecord().GetTtl() > service->GetTtl() / 2)
+                    {
+                        shouldSuppressAnswer = true;
+                        break;
+                    }
+                }
+
+                if (shouldSuppressAnswer)
+                {
+                    break;
+                }
+
+                if (ptrQueryMatched || srvQueryMatched)
+                {
+                    needAdditionalAaaaRecord = true;
+                }
+
+                if (!aAdditional && ptrQueryMatched)
+                {
+                    SuccessOrExit(
+                        error = Server::AppendPtrRecord(aResponseMessage, aName, instanceName, instanceTtl, aCompressInfo));
+                    Server::IncResourceRecordCount(aResponseHeader, aAdditional);
+                    response = Header::kResponseSuccess;
+                }
+
+                if ((!aAdditional && srvQueryMatched) ||
+                    (aAdditional && ptrQueryMatched &&
+                     !Server::HasQuestion(aResponseHeader, aResponseMessage, instanceName, ResourceRecord::kTypeSrv)))
+                {
+                    SuccessOrExit(error = Server::AppendSrvRecord(aResponseMessage, instanceName, hostName, instanceTtl,
+                                                          service->GetPriority(), service->GetWeight(),
+                                                          service->GetPort(), aCompressInfo));
+                    Server::IncResourceRecordCount(aResponseHeader, aAdditional);
+                    response = Header::kResponseSuccess;
+                }
+
+                if ((!aAdditional && txtQueryMatched) ||
+                    (aAdditional && ptrQueryMatched &&
+                     !Server::HasQuestion(aResponseHeader, aResponseMessage, instanceName, ResourceRecord::kTypeTxt)))
+                {
+                    SuccessOrExit(error = Server::AppendTxtRecord(aResponseMessage, instanceName, service->GetTxtData(),
+                                                          service->GetTxtDataLength(), instanceTtl, aCompressInfo));
+                    Server::IncResourceRecordCount(aResponseHeader, aAdditional);
+                    response = Header::kResponseSuccess;
+                }
+            }
+        }
+
+        // Handle AAAA query
+        if ((!aAdditional && (qtype == ResourceRecord::kTypeAaaa || qtype == ResourceRecord::kTypeAny) &&
+             host->Matches(aName)) ||
+            (aAdditional && needAdditionalAaaaRecord &&
+             !Server::HasQuestion(aResponseHeader, aResponseMessage, hostName, ResourceRecord::kTypeAaaa)))
+        {
+            uint8_t             addrNum;
+            const Ip6::Address *addrs   = host->GetAddresses(addrNum);
+            uint32_t            hostTtl = TimeMilli::MsecToSec(host->GetExpireTime() - now);
+
+            for (uint8_t i = 0; i < addrNum; i++)
+            {
+                SuccessOrExit(error = Server::AppendAaaaRecord(aResponseMessage, hostName, addrs[i], hostTtl, aCompressInfo));
+                Server::IncResourceRecordCount(aResponseHeader, aAdditional);
+            }
+
+            response = Header::kResponseSuccess;
+        }
+    }
+
+exit:
+    return error == kErrorNone ? response : Header::kResponseServerFailure;
+}
+
 Header::Response MdnsServer::ResolveQuery(const Header             &aRequestHeader,
                                           const Message            &aRequestMessage,
                                           Header                   &aResponseHeader,
@@ -821,8 +967,33 @@ Header::Response MdnsServer::ResolveQuery(const Header             &aRequestHead
     uint16_t                 readOffset;
     NameComponentsOffsetInfo nameComponentsOffsetInfo;
     Header::Response         responseCode = Header::kResponseSuccess;
+    uint16_t                 knownAnswerOffset = ReturnKnownAnswerOffsetFromQuery(aRequestHeader, aRequestMessage);
 
     readOffset = sizeof(Header);
+
+    if(knownAnswerOffset)
+    {
+        ResourceRecord record;
+        for (uint8_t index = 0; index < aRequestHeader.GetAnswerCount(); index++)
+        {
+            char instanceName[Dns::Name::kMaxNameSize];
+            char serviceName[Dns::Name::kMaxNameSize];
+
+            Name::ReadName(aRequestMessage, knownAnswerOffset, serviceName, sizeof(serviceName));
+            ResourceRecord::ReadRecord(aRequestMessage, knownAnswerOffset, record);
+            Name::ReadName(aRequestMessage, knownAnswerOffset, instanceName, sizeof(instanceName));
+
+            KnownAnswerEntry *kaEntry = KnownAnswerEntry::AllocateAndInit(serviceName, instanceName, record);
+            if (!mReceivedKnownAnswers.ContainsMatching(*kaEntry))
+            {
+                mReceivedKnownAnswers.Push(*kaEntry);
+            }
+            else
+            {
+                kaEntry->Free();
+            }
+        }
+    }
 
     /* Go through each question and attach the corresponding RRs in the answer section */
     for (uint16_t i = 0; i < aRequestHeader.GetQuestionCount(); i++)
@@ -850,13 +1021,13 @@ Header::Response MdnsServer::ResolveQuery(const Header             &aRequestHead
                      responseCode = Header::kResponseNameError);
 
         SuccessOrExit(responseCode =
-                          ResolveQuestion(name, question, aResponseHeader, aResponseMessage, aCompressInfo, false));
+                          ResolveQuestion(name, question, aResponseHeader, aResponseMessage, aCompressInfo, false, mReceivedKnownAnswers));
 
 #if OPENTHREAD_CONFIG_SRP_SERVER_ENABLE
         // Convert from kDefaultMcastDomainName to kDefaultDomainName (.local -> default.service.arpa) for searching
         memcpy(name + nameComponentsOffsetInfo.mDomainOffset, kThreadDefaultDomainName,
                sizeof(kThreadDefaultDomainName));
-        Get<Server>().ResolveQuestionBySrp(name, question, aResponseHeader, aResponseMessage, aCompressInfo, false);
+        ResolveQuestionBySrp(name, question, aResponseHeader, aResponseMessage, aCompressInfo, false, mReceivedKnownAnswers);
 #endif
     }
 
@@ -881,19 +1052,20 @@ Header::Response MdnsServer::ResolveQuery(const Header             &aRequestHead
                          responseCode = Header::kResponseNameError);
 
             SuccessOrExit(responseCode =
-                              ResolveQuestion(name, question, aResponseHeader, aResponseMessage, aCompressInfo, true));
+                              ResolveQuestion(name, question, aResponseHeader, aResponseMessage, aCompressInfo, true, mReceivedKnownAnswers));
 
 #if OPENTHREAD_CONFIG_SRP_SERVER_ENABLE
             // Convert from kDefaultMcastDomainName to kDefaultDomainName (.local -> default.service.arpa) for
             // searching
             memcpy(name + nameComponentsOffsetInfo.mDomainOffset, kThreadDefaultDomainName,
                    sizeof(kThreadDefaultDomainName));
-            Get<Server>().ResolveQuestionBySrp(name, question, aResponseHeader, aResponseMessage, aCompressInfo, true);
+            ResolveQuestionBySrp(name, question, aResponseHeader, aResponseMessage, aCompressInfo, true, mReceivedKnownAnswers);
 #endif
         }
     }
 
 exit:
+    RemoveAllKnownAnswerEntries();
     return responseCode;
 }
 
@@ -3561,6 +3733,47 @@ Error MdnsServer::SrpAdvertisingServiceInfo::Init(const char *aServiceName, cons
     mInstanceName.Set(aInstanceName);
 
     return error;
+}
+
+uint16_t MdnsServer::ReturnKnownAnswerOffsetFromQuery(const Header &aHeader, const Message &aMessage)
+{
+    uint16_t retOffset = 0;
+
+    if (aHeader.GetAnswerCount())
+    {
+        uint16_t readOffset = sizeof(Header);
+        Name     aName(aMessage, readOffset);
+
+        for (uint16_t i = 0; i < aHeader.GetQuestionCount(); i++)
+        {
+            Question question;
+
+            Name::CompareName(aMessage, readOffset, aName);
+            IgnoreError(aMessage.Read(readOffset, question));
+            readOffset += sizeof(question);
+            retOffset = readOffset;
+        }
+    }
+    return retOffset;
+}
+
+Error MdnsServer::KnownAnswerEntry::Init(char *aServiceName, char *aInstanceName, ResourceRecord &aRecord)
+{
+    mServiceName.Set(aServiceName);
+    mInstanceName.Set(aInstanceName);
+    mRecord = aRecord;
+
+    return kErrorNone;
+}
+
+void MdnsServer::RemoveAllKnownAnswerEntries(void)
+{
+    while(!mReceivedKnownAnswers.IsEmpty())
+    {
+        MdnsServer::KnownAnswerEntry *entry = mReceivedKnownAnswers.GetHead();
+        IgnoreError(mReceivedKnownAnswers.Remove(*entry));
+        entry->Free();
+    }
 }
 
 } // namespace ServiceDiscovery
