@@ -1414,21 +1414,21 @@ Error MdnsServer::AddService(const char          *aInstanceName,
     Prober  *prober  = nullptr;
 
     // Ensure the same service does not exist already.
-    service = FindService(aServiceName, aInstanceName);
+    Service *existingService = FindService(aServiceName, aInstanceName);
 
-    if (service)
+    if (existingService)
     {
-        if (!service->IsMarkedAsDeleted())
+        if (!existingService->IsMarkedAsDeleted())
         {
             ExitNow(error = kErrorDuplicated);
         }
         else
         {
-            service->UnmarkAsDeleted();
+            existingService->UnmarkAsDeleted();
 
-            if (UpdateServiceContent(service, aPort, aTxtEntries, mNumTxtEntries) == kErrorNone)
+            if (UpdateServiceContent(existingService, aPort, aTxtEntries, mNumTxtEntries) == kErrorNone)
             {
-                Announcer *announcer = ReturnAnnouncingInstanceContainingServiceId(service->GetServiceUpdateId());
+                Announcer *announcer = ReturnAnnouncingInstanceContainingServiceId(existingService->GetServiceUpdateId());
                 if (announcer != nullptr)
                 {
                     announcer->Stop();
@@ -1436,7 +1436,7 @@ Error MdnsServer::AddService(const char          *aInstanceName,
                 }
                 else
                 {
-                    announcer = AllocateAnnouncer(service->GetServiceUpdateId());
+                    announcer = AllocateAnnouncer(existingService->GetServiceUpdateId());
                     VerifyOrExit(announcer != nullptr, error = kErrorNoBufs);
                     AnnounceHostAndServices(*announcer);
                 }
@@ -2934,6 +2934,7 @@ MdnsServer::Announcer::Announcer(Instance &aInstance, uint32_t aId)
     , mTxCount(0)
     , mState(Announcer::kIdle)
 {
+    mHasId = true;
 }
 
 MdnsServer::Announcer::Announcer(Instance &aInstance)
@@ -2942,6 +2943,7 @@ MdnsServer::Announcer::Announcer(Instance &aInstance)
     , mTxCount(0)
     , mState(Announcer::kIdle)
 {
+    mHasId = false;
 }
 
 void MdnsServer::Announcer::StartAnnouncing()
@@ -2971,9 +2973,16 @@ void MdnsServer::Announcer::HandleTimer(void)
     {
         mTimer.Stop();
         SetState(Announcer::kAnnounced);
-        mAnnouncements.Dequeue(*announcement);
+        mAnnouncements.DequeueAndFree(*announcement);
         Get<MdnsServer>().HandleAnnouncerFinished(*this);
-        Get<MdnsServer>().RemoveAnnouncingInstance(GetId());
+        if(this->HasId())
+        {
+            Get<MdnsServer>().RemoveAnnouncingInstance(GetId());
+        }
+        else
+        {
+            this->Free();
+        }
         ExitNow();
     }
 
@@ -2996,7 +3005,14 @@ void MdnsServer::Announcer::HandleTimer(void)
     else
     {
         Stop();
-        Get<MdnsServer>().RemoveAnnouncingInstance(GetId());
+        if (this->HasId())
+        {
+            Get<MdnsServer>().RemoveAnnouncingInstance(GetId());
+        }
+        else
+        {
+            this->Free();
+        }
         ExitNow();
     }
 
@@ -3010,7 +3026,7 @@ void MdnsServer::Announcer::Stop(void)
     SetState(kIdle);
     Message *message = mAnnouncements.GetHead();
     mAnnouncements.DequeueAndFree(*message);
-    }
+}
 
 const uint32_t *MdnsServer::Announcer::GetServicesIdList(uint8_t &aNumServices) const
 {

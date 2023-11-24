@@ -570,11 +570,13 @@ public:
         const uint32_t *GetServicesIdList(uint8_t &aNumServices) const;
         void            PushServiceId(uint32_t aId) { mServicesIdList.PushBack(aId); }
         uint32_t        GetId(void) { return mId; }
+        bool            HasId(void) { return mHasId; }
         bool            Matches(uint32_t aId) const { return mId == aId; }
 
     private:
         Announcer        *mNext;
         uint32_t          mId;
+        bool              mHasId;
         TimerMilliContext mTimer;
 
         uint8_t          mTxCount;
