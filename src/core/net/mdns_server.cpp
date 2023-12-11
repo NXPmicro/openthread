@@ -1012,9 +1012,16 @@ Header::Response MdnsServer::ResolveQuery(const Header             &aRequestHead
         bUnicastResponse |= question.IsQuQuestion();
 
         VerifyOrExit(qtype == ResourceRecord::kTypePtr || qtype == ResourceRecord::kTypeSrv ||
-                         qtype == ResourceRecord::kTypeTxt || qtype == ResourceRecord::kTypeAaaa ||
-                         qtype == ResourceRecord::kTypeAny,
+                         qtype == ResourceRecord::kTypeTxt || qtype == ResourceRecord::kTypeA ||
+                         qtype == ResourceRecord::kTypeAaaa || qtype == ResourceRecord::kTypeAny,
                      responseCode = Header::kResponseNotImplemented);
+
+        // For the moment, silently discard A query. If A query response will not be available, a NSEC record should be
+        // returned.
+        if (qtype == ResourceRecord::kTypeA)
+        {
+            continue;
+        }
 
         VerifyOrExit(Server::FindNameComponents(name, aCompressInfo.GetDomainName(), nameComponentsOffsetInfo) ==
                          kErrorNone,
