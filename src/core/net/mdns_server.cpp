@@ -3111,7 +3111,7 @@ void MdnsServer::HandleSrpAdvertisingProxy(otSrpServerServiceUpdateId aId, const
                     SrpAdvertisingServiceInfo::AllocateAndInit(s.GetServiceName(), s.GetInstanceName());
                 if(!s.IsDeleted())
                 {
-                    if (host->FindService(s.GetServiceName(), s.GetInstanceName()) == nullptr)
+                    if ((host->FindService(s.GetServiceName(), s.GetInstanceName()) == nullptr) && !s.IsSubType())
                     {
                         servicesMarkedForProbing.Push(*info);
                     }
@@ -3145,7 +3145,6 @@ void MdnsServer::HandleSrpAdvertisingProxy(otSrpServerServiceUpdateId aId, const
                 {
                     Get<Srp::Server>().HandleServiceUpdateResult(aId, kErrorNone);
                 }
-                // remove elements from list and de-allocate data
             }
         }
         else
