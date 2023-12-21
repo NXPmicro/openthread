@@ -379,7 +379,7 @@ public:
          * This is the destructor for `Service` object.
          *
          */
-        ~Service(void) { Free(); }
+        ~Service(void) { FreeSubTypes(); }
 
         /**
          * Frees any memory allocated by the `Service`.
@@ -387,7 +387,7 @@ public:
          * The `Service` destructor will automatically call `Free()`. This method allows caller to free memory explicitly.
          *
          */
-        void Free(void)
+        void FreeSubTypes(void)
         {
             for (SubTypeEntry &entry : mSubTypesList)
             {
