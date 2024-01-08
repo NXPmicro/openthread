@@ -1389,9 +1389,11 @@ exit:
 
 Error MdnsServer::SetHostName(const char *aHostName)
 {
-    Error error = kErrorNone;
+    Error   error  = kErrorNone;
+    Prober *prober = nullptr;
 
     VerifyOrExit(aHostName != nullptr, error = kErrorInvalidArgs);
+    VerifyOrExit(Name::IsSubDomainOf(aHostName, kDefaultDomainName), error = kErrorInvalidArgs);
 
     if (mHostName.IsNull())
     {
@@ -1399,10 +1401,20 @@ Error MdnsServer::SetHostName(const char *aHostName)
     }
     else
     {
-        error = StringMatch(mHostName.AsCString(), aHostName, kStringCaseInsensitiveMatch) ? kErrorNone : kErrorFailed;
+        VerifyOrExit(!StringMatch(mHostName.AsCString(), aHostName, kStringCaseInsensitiveMatch),
+                     error = kErrorDuplicated);
+        prober = AllocateProber(true, nullptr, 0);
+        VerifyOrExit(prober != nullptr, error = kErrorNoBufs);
+        VerifyOrExit(mHostName.Set(aHostName) != kErrorNoBufs, error = kErrorNoBufs);
+        mIsHostVerifiedUnique = false;
+        PublishHostAndServices(prober);
     }
 
 exit:
+    if (error == kErrorNoBufs && prober)
+    {
+        RemoveProbingInstance(prober->GetId());
+    }
     return error;
 }
 

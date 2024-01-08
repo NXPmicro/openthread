@@ -88,7 +88,6 @@ template <> otError MdnsServer::Process<Cmd("hostname")>(Arg aArgs[])
     else
     {
         VerifyOrExit(aArgs[1].IsEmpty(), error = OT_ERROR_INVALID_ARGS);
-
         error = otMdnsServerSetHostName(GetInstancePtr(), aArgs[0].GetCString());
     }
 
