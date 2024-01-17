@@ -85,6 +85,7 @@ Mle::Mle(Instance &aInstance)
     , mDelayedResponseTimer(aInstance)
     , mMessageTransmissionTimer(aInstance)
 #if OPENTHREAD_FTD
+    , mLinkRequestAttempts(0)
     , mWasLeader(false)
 #endif
     , mAttachMode(kAnyPartition)
