@@ -3127,6 +3127,10 @@ void MdnsServer::HandleSrpAdvertisingProxy(otSrpServerServiceUpdateId aId, const
                         servicesMarkedForAnnounce.Push(*info);
                     }
                 }
+                else // removals
+                {
+                    servicesMarkedForAnnounce.Push(*info);
+                }
             }
             if(!servicesMarkedForProbing.IsEmpty())
             {
