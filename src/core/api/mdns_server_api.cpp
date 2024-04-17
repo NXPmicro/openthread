@@ -73,6 +73,11 @@ otError otMdnsServerAddAddress(otInstance *aInstance, const otIp6Address *aIp6Ad
     return AsCoreType(aInstance).Get<Dns::ServiceDiscovery::MdnsServer>().AddAddress(AsCoreType(aIp6Address));
 }
 
+void otMdnsServerClearAddresses(otInstance *aInstance)
+{
+    return AsCoreType(aInstance).Get<Dns::ServiceDiscovery::MdnsServer>().ClearAddresses();
+}
+
 otError otMdnsServerSetHostName(otInstance *aInstance, const char *aHostName)
 {
     return AsCoreType(aInstance).Get<Dns::ServiceDiscovery::MdnsServer>().SetHostName(aHostName);

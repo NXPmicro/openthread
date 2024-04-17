@@ -149,6 +149,13 @@ const otIp6Address *otMdnsServerGetAddresses(otInstance *aInstance, uint8_t *num
 otError otMdnsServerAddAddress(otInstance *aInstance, const otIp6Address *aIp6Address);
 
 /**
+ * This function clears the list of host IPv6 addresses.
+ * 
+ * @param[in] aInstance           A pointer to the OpenThread instance.
+ */
+void otMdnsServerClearAddresses(otInstance *aInstance);
+
+/**
  * This function returns the host name.
  *
  * @param[in] aInstance           A pointer to the OpenThread instance.

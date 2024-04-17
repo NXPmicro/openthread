@@ -199,6 +199,11 @@ public:
     Error AddAddress(const Ip6::Address &aIp6Address);
 
     /**
+     * This function clears the list of host IPv6 address.
+     */
+    void ClearAddresses();
+
+    /**
      * This function sets mDns host name label;
      *
      * @param[in] aHostName         A pointer to host name label string (MUST NOT be NULL).

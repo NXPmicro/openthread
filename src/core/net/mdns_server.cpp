@@ -1387,6 +1387,11 @@ exit:
     return error;
 }
 
+void MdnsServer::ClearAddresses()
+{
+    mAddresses.Free();
+}
+
 Error MdnsServer::SetHostName(const char *aHostName)
 {
     Error   error  = kErrorNone;
