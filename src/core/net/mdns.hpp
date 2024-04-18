@@ -766,6 +766,7 @@ private:
         TimeMilli mAnswerTime;
         bool      mIsProbe;
         bool      mUnicastResponse;
+        bool      mLegacyUnicastResponse;
     };
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -802,6 +803,8 @@ private:
     {
     public:
         // Keeps track of record state and timings.
+
+        static constexpr uint32_t kMaxLegacyUnicastTtl = 10; // seconds
 
         RecordInfo(void) { Clear(); }
 
@@ -1063,7 +1066,7 @@ private:
         void  AppendPtrRecordTo(TxMessage &aTxMessage, Section aSection, SubType *aSubType = nullptr);
         void  AppendKeyRecordTo(TxMessage &aTxMessage, Section aSection);
         void  AppendNsecRecordTo(TxMessage &aTxMessage, Section aSection);
-        void  AppendServiceNameTo(TxMessage &TxMessage, Section aSection);
+        void  AppendServiceNameTo(TxMessage &TxMessage, Section aSection, bool aPerformNameCompression = true);
         void  AppendServiceTypeTo(TxMessage &aTxMessage, Section aSection);
         void  AppendSubServiceTypeTo(TxMessage &aTxMessage, Section aSection);
         void  AppendSubServiceNameTo(TxMessage &aTxMessage, Section aSection, SubType &aSubType);
@@ -1140,10 +1143,16 @@ private:
             kMulticastQuery,
             kMulticastResponse,
             kUnicastResponse,
+            kLegacyUnicastResponse,
         };
 
-        TxMessage(Instance &aInstance, Type aType);
-        TxMessage(Instance &aInstance, Type aType, const AddressInfo &aUnicastDest);
+        TxMessage(Instance &aInstance, Type aType, uint16_t aQueryId = 0);
+        TxMessage(Instance &aInstance, Type aType, const AddressInfo &aUnicastDest, uint16_t aQueryId = 0);
+        TxMessage(Instance          &aInstance,
+                  Type               aType,
+                  const AddressInfo &aUnicastDest,
+                  OwnedPtr<Message> &aReceivedQuery,
+                  uint16_t           aQueryId);
         Type          GetType(void) const { return mType; }
         Message      &SelectMessageFor(Section aSection);
         AppendOutcome AppendLabel(Section aSection, const char *aLabel, uint16_t &aCompressOffset);
@@ -1160,7 +1169,7 @@ private:
     private:
         static constexpr bool kIsSingleLabel = true;
 
-        void          Init(Type aType);
+        void          Init(Type aType, uint16_t aMessageId = 0);
         void          Reinit(void);
         bool          IsOverSizeLimit(void) const;
         AppendOutcome AppendLabels(Section     aSection,
@@ -1298,8 +1307,10 @@ private:
         uint16_t              mStartOffset[kNumSections];
         bool                  mIsQuery : 1;
         bool                  mIsUnicast : 1;
+        bool                  mIsLegacyUnicast : 1;
         bool                  mTruncated : 1;
         bool                  mIsSelfOriginating : 1;
+        uint16_t              mQueryId;
     };
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

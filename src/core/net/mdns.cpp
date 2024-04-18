@@ -573,7 +573,7 @@ void Core::RecordInfo::ScheduleAnswer(const AnswerInfo &aInfo)
 {
     VerifyOrExit(CanAnswer());
 
-    if (aInfo.mUnicastResponse)
+    if (aInfo.mUnicastResponse || aInfo.mLegacyUnicastResponse)
     {
         mUnicastAnswerPending = true;
         ExitNow();
@@ -624,6 +624,7 @@ bool Core::RecordInfo::ShouldAppendTo(TxMessage &aResponse, TimeMilli aNow) cons
         break;
 
     case TxMessage::kUnicastResponse:
+    case TxMessage::kLegacyUnicastResponse:
         shouldAppend = mUnicastAnswerPending;
         break;
 
@@ -670,6 +671,7 @@ void Core::RecordInfo::UpdateStateAfterAnswer(const TxMessage &aResponse)
         break;
 
     case TxMessage::kUnicastResponse:
+    case TxMessage::kLegacyUnicastResponse:
         VerifyOrExit(IsAppended());
         VerifyOrExit(mAppendSection == kAnswerSection);
         mUnicastAnswerPending = false;
@@ -742,6 +744,7 @@ void Core::RecordInfo::MarkAsAppended(TxMessage &aTxMessage, Section aSection)
         break;
 
     case TxMessage::kUnicastResponse:
+    case TxMessage::kLegacyUnicastResponse:
         mAppendState = kAppendedInUnicastMsg;
         break;
 
@@ -1181,7 +1184,6 @@ template <typename EntryType> void Core::Entry::HandleTimer(EntryTimerContext &a
     case kRemoving:
         ExitNow();
     }
-
     thisAsEntryType->DetermineNextFireTime();
 
 exit:
@@ -1225,9 +1227,17 @@ void Core::Entry::AppendKeyRecordTo(TxMessage &aTxMessage, Section aSection, Nam
     aNameAppender(*this, aTxMessage, aSection);
 
     record.Init(ResourceRecord::kTypeKey);
-    record.SetTtl(mKeyRecord.GetTtl());
     record.SetLength(mKeyData.GetLength());
-    UpdateCacheFlushFlagIn(record, aSection);
+
+    if (aTxMessage.GetType() == TxMessage::kLegacyUnicastResponse)
+    {
+        record.SetTtl(Min(Core::RecordInfo::kMaxLegacyUnicastTtl, mKeyRecord.GetTtl()));
+    }
+    else
+    {
+        record.SetTtl(mKeyRecord.GetTtl());
+        UpdateCacheFlushFlagIn(record, aSection);
+    }
 
     SuccessOrAssert(message->Append(record));
     SuccessOrAssert(message->AppendBytes(mKeyData.GetBytes(), mKeyData.GetLength()));
@@ -1563,9 +1573,17 @@ void Core::HostEntry::AppendAddressRecordsTo(TxMessage &aTxMessage, Section aSec
         AaaaRecord aaaaRecord;
 
         aaaaRecord.Init();
-        aaaaRecord.SetTtl(mAddrRecord.GetTtl());
         aaaaRecord.SetAddress(address);
-        UpdateCacheFlushFlagIn(aaaaRecord, aSection);
+
+        if (aTxMessage.GetType() == TxMessage::kLegacyUnicastResponse)
+        {
+            aaaaRecord.SetTtl(Min(Core::RecordInfo::kMaxLegacyUnicastTtl, mAddrRecord.GetTtl()));
+        }
+        else
+        {
+            aaaaRecord.SetTtl(mAddrRecord.GetTtl());
+            UpdateCacheFlushFlagIn(aaaaRecord, aSection);
+        }
 
         AppendNameTo(aTxMessage, aSection);
         SuccessOrAssert(message->Append(aaaaRecord));
@@ -2324,13 +2342,25 @@ void Core::ServiceEntry::AppendSrvRecordTo(TxMessage &aTxMessage, Section aSecti
     message = &aTxMessage.SelectMessageFor(aSection);
 
     srv.Init();
-    srv.SetTtl(mSrvRecord.GetTtl());
     srv.SetPriority(mPriority);
     srv.SetWeight(mWeight);
     srv.SetPort(mPort);
-    UpdateCacheFlushFlagIn(srv, aSection);
 
-    AppendServiceNameTo(aTxMessage, aSection);
+    if (aTxMessage.GetType() == TxMessage::kLegacyUnicastResponse)
+    {
+        srv.SetTtl(Min(Core::RecordInfo::kMaxLegacyUnicastTtl, mSrvRecord.GetTtl()));
+        // RFC6762, Section 18.14 Name Compression:
+        // In legacy unicast responses generated to answer legacy queries, name
+        // compression MUST NOT be performed on SRV records.
+        AppendServiceNameTo(aTxMessage, aSection, false);
+    }
+    else
+    {
+        srv.SetTtl(mSrvRecord.GetTtl());
+        UpdateCacheFlushFlagIn(srv, aSection);
+        AppendServiceNameTo(aTxMessage, aSection);
+    }
+
     offset = message->GetLength();
     SuccessOrAssert(message->Append(srv));
     AppendHostNameTo(aTxMessage, aSection);
@@ -2353,9 +2383,17 @@ void Core::ServiceEntry::AppendTxtRecordTo(TxMessage &aTxMessage, Section aSecti
     message = &aTxMessage.SelectMessageFor(aSection);
 
     txt.Init();
-    txt.SetTtl(mTxtRecord.GetTtl());
     txt.SetLength(mTxtData.GetLength());
-    UpdateCacheFlushFlagIn(txt, aSection);
+
+    if (aTxMessage.GetType() == TxMessage::kLegacyUnicastResponse)
+    {
+        txt.SetTtl(Min(Core::RecordInfo::kMaxLegacyUnicastTtl, mTxtRecord.GetTtl()));
+    }
+    else
+    {
+        txt.SetTtl(mTxtRecord.GetTtl());
+        UpdateCacheFlushFlagIn(txt, aSection);
+    }
 
     AppendServiceNameTo(aTxMessage, aSection);
     SuccessOrAssert(message->Append(txt));
@@ -2383,7 +2421,15 @@ void Core::ServiceEntry::AppendPtrRecordTo(TxMessage &aTxMessage, Section aSecti
     message = &aTxMessage.SelectMessageFor(aSection);
 
     ptr.Init();
-    ptr.SetTtl(ptrRecord.GetTtl());
+
+    if (aTxMessage.GetType() == TxMessage::kLegacyUnicastResponse)
+    {
+        ptr.SetTtl(Min(Core::RecordInfo::kMaxLegacyUnicastTtl, ptrRecord.GetTtl()));
+    }
+    else
+    {
+        ptr.SetTtl(ptrRecord.GetTtl());
+    }
 
     if (aSubType == nullptr)
     {
@@ -2440,12 +2486,21 @@ void Core::ServiceEntry::AppendEntryName(Entry &aEntry, TxMessage &aTxMessage, S
     static_cast<ServiceEntry &>(aEntry).AppendServiceNameTo(aTxMessage, aSection);
 }
 
-void Core::ServiceEntry::AppendServiceNameTo(TxMessage &aTxMessage, Section aSection)
+void Core::ServiceEntry::AppendServiceNameTo(TxMessage &aTxMessage, Section aSection, bool aPerformNameCompression)
 {
     AppendOutcome outcome;
 
-    outcome = aTxMessage.AppendLabel(aSection, mServiceInstance.AsCString(), mServiceNameOffset);
-    VerifyOrExit(outcome != kAppendedFullNameAsCompressed);
+    if (!aPerformNameCompression)
+    {
+        uint16_t compressOffset = kUnspecifiedOffset;
+        outcome                 = aTxMessage.AppendLabel(aSection, mServiceInstance.AsCString(), compressOffset);
+        VerifyOrExit(outcome == kAppendedLabels);
+    }
+    else
+    {
+        outcome = aTxMessage.AppendLabel(aSection, mServiceInstance.AsCString(), mServiceNameOffset);
+        VerifyOrExit(outcome != kAppendedFullNameAsCompressed);
+    }
 
     AppendServiceTypeTo(aTxMessage, aSection);
 
@@ -2708,7 +2763,14 @@ void Core::ServiceType::AppendPtrRecordTo(TxMessage &aResponse, uint16_t aServic
     message = &aResponse.SelectMessageFor(kAnswerSection);
 
     ptr.Init();
-    ptr.SetTtl(mServicesPtr.GetTtl());
+    if (aResponse.GetType() == TxMessage::kLegacyUnicastResponse)
+    {
+        ptr.SetTtl(Min(Core::RecordInfo::kMaxLegacyUnicastTtl, mServicesPtr.GetTtl()));
+    }
+    else
+    {
+        ptr.SetTtl(mServicesPtr.GetTtl());
+    }
 
     aResponse.AppendServicesDnssdName(kAnswerSection);
     offset = message->GetLength();
@@ -2725,19 +2787,35 @@ exit:
 //----------------------------------------------------------------------------------------------------------------------
 // Core::TxMessage
 
-Core::TxMessage::TxMessage(Instance &aInstance, Type aType)
+Core::TxMessage::TxMessage(Instance &aInstance, Type aType, uint16_t aQueryId)
     : InstanceLocator(aInstance)
 {
-    Init(aType);
+    Init(aType, aQueryId);
 }
 
-Core::TxMessage::TxMessage(Instance &aInstance, Type aType, const AddressInfo &aUnicastDest)
-    : TxMessage(aInstance, aType)
+Core::TxMessage::TxMessage(Instance &aInstance, Type aType, const AddressInfo &aUnicastDest, uint16_t aQueryId)
+    : TxMessage(aInstance, aType, aQueryId)
 {
     mUnicastDest = aUnicastDest;
 }
 
-void Core::TxMessage::Init(Type aType)
+Core::TxMessage::TxMessage(Instance          &aInstance,
+                           Type               aType,
+                           const AddressInfo &aUnicastDest,
+                           OwnedPtr<Message> &aReceivedQuery,
+                           uint16_t           aQueryId)
+    : TxMessage(aInstance, aType, aUnicastDest, aQueryId)
+{
+    uint16_t offset = sizeof(Header);
+    IgnoreError(Name(*aReceivedQuery, sizeof(Header)).AppendTo(*mMsgPtr));
+    IgnoreError(Name::ParseName(*aReceivedQuery, offset));
+    // RFC6762, section 6.7:
+    // Legacy Unicast Response must repeat the question
+    IgnoreError(mMsgPtr->AppendBytesFromMessage(*aReceivedQuery, offset, sizeof(ot::Dns::Question)));
+    IncrementRecordCount(kQuestionSection);
+}
+
+void Core::TxMessage::Init(Type aType, uint16_t aMessageId)
 {
     Header header;
 
@@ -2770,7 +2848,9 @@ void Core::TxMessage::Init(Type aType)
         break;
     case kMulticastResponse:
     case kUnicastResponse:
+    case kLegacyUnicastResponse:
         header.SetType(Header::kTypeResponse);
+        header.SetMessageId(aMessageId);
         break;
     }
 
@@ -2797,9 +2877,9 @@ Message &Core::TxMessage::SelectMessageFor(Section aSection)
         mainSection  = kQuestionSection;
         extraSection = kAnswerSection;
         break;
-
-    case kMulticastResponse:
+    case kLegacyUnicastResponse:
     case kUnicastResponse:
+    case kMulticastResponse:
         break;
     }
 
@@ -3080,6 +3160,7 @@ void Core::TxMessage::Send(void)
         break;
 
     case kUnicastResponse:
+    case kLegacyUnicastResponse:
         otPlatMdnsSendUnicast(&GetInstance(), mMsgPtr.Release(), &mUnicastDest);
         break;
     }
@@ -3148,6 +3229,8 @@ void Core::TxMessage::Reinit(void)
         // compress offset since the host name should not be used
         // in any other query question.
 
+        break;
+    case kLegacyUnicastResponse:
         break;
     }
 }
@@ -3252,11 +3335,12 @@ Error Core::RxMessage::Init(Instance          &aInstance,
 
     if (aSenderAddress.mPort != kUdpPort)
     {
-        if (mIsQuery)
+        // Simple DNS resolver does not allow more than one question in a query message
+        if (mIsQuery && header.GetQuestionCount() == 1)
         {
             // Section 6.7 Legacy Unicast
-            LogInfo("We do not yet support legacy unicast message (source port not matching mDNS port)");
-            ExitNow(error = kErrorNotCapable);
+            mIsLegacyUnicast = true;
+            mQueryId         = header.GetMessageId();
         }
         else
         {
@@ -3382,9 +3466,14 @@ Core::RxMessage::ProcessOutcome Core::RxMessage::ProcessQuery(bool aShouldProces
         {
             canAnswer = true;
 
-            if (question.mUnicastResponse)
+            if (question.mUnicastResponse || mIsLegacyUnicast)
             {
                 needUnicastResponse = true;
+            }
+
+            if (mIsLegacyUnicast)
+            {
+                shouldDelay = false;
             }
         }
     }
@@ -3524,10 +3613,11 @@ void Core::RxMessage::AnswerQuestion(const Question &aQuestion, TimeMilli aAnswe
 
     VerifyOrExit(aQuestion.mCanAnswer);
 
-    answerInfo.mQuestionRrType  = aQuestion.mRrType;
-    answerInfo.mAnswerTime      = aAnswerTime;
-    answerInfo.mIsProbe         = aQuestion.mIsProbe;
-    answerInfo.mUnicastResponse = aQuestion.mUnicastResponse;
+    answerInfo.mQuestionRrType        = aQuestion.mRrType;
+    answerInfo.mAnswerTime            = aAnswerTime;
+    answerInfo.mIsProbe               = aQuestion.mIsProbe;
+    answerInfo.mUnicastResponse       = aQuestion.mUnicastResponse;
+    answerInfo.mLegacyUnicastResponse = mIsLegacyUnicast;
 
     if (aQuestion.mIsForAllServicesDnssd)
     {
@@ -3745,7 +3835,10 @@ exit:
 
 void Core::RxMessage::SendUnicastResponse(const AddressInfo &aUnicastDest)
 {
-    TxMessage response(GetInstance(), TxMessage::kUnicastResponse, aUnicastDest);
+    TxMessage response = mIsLegacyUnicast ? TxMessage(GetInstance(), TxMessage::kLegacyUnicastResponse, aUnicastDest,
+                                                      mMessagePtr, mQueryId)
+                                          : TxMessage(GetInstance(), TxMessage::kUnicastResponse, aUnicastDest);
+
     TimeMilli now = TimerMilli::GetNow();
 
     for (HostEntry &entry : Get<Core>().mHostEntries)
