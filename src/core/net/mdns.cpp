@@ -2102,15 +2102,17 @@ void Core::ServiceEntry::PrepareResponse(TxMessage &aResponse, TimeMilli aNow)
 
 void Core::ServiceEntry::PrepareResponseRecords(TxMessage &aResponse, TimeMilli aNow)
 {
-    bool       appendNsec = false;
-    HostEntry *hostEntry  = nullptr;
+    bool       appendNsec                    = false;
+    bool       appendAdditionalRecordsForPtr = false;
+    HostEntry *hostEntry                     = nullptr;
 
     DiscoverOffsetsAndHost(hostEntry);
 
     // We determine records to include in Additional Data section
     // per RFC 6763 section 12:
     //
-    // - For base PTR, we include SRV, TXT, and host addresses.
+    // - For PTR (base or sub-type), we include SRV, TXT, and host
+    //   addresses.
     // - For SRV, we include host addresses only (TXT record not
     //   recommended).
     //
@@ -2127,13 +2129,7 @@ void Core::ServiceEntry::PrepareResponseRecords(TxMessage &aResponse, TimeMilli 
 
         if (mPtrRecord.GetTtl() > 0)
         {
-            mSrvRecord.MarkToAppendInAdditionalData();
-            mTxtRecord.MarkToAppendInAdditionalData();
-
-            if (hostEntry != nullptr)
-            {
-                hostEntry->mAddrRecord.MarkToAppendInAdditionalData();
-            }
+            appendAdditionalRecordsForPtr = true;
         }
     }
 
@@ -2142,6 +2138,22 @@ void Core::ServiceEntry::PrepareResponseRecords(TxMessage &aResponse, TimeMilli 
         if (subType.mPtrRecord.ShouldAppendTo(aResponse, aNow))
         {
             AppendPtrRecordTo(aResponse, kAnswerSection, &subType);
+
+            if (subType.mPtrRecord.GetTtl() > 0)
+            {
+                appendAdditionalRecordsForPtr = true;
+            }
+        }
+    }
+
+    if (appendAdditionalRecordsForPtr)
+    {
+        mSrvRecord.MarkToAppendInAdditionalData();
+        mTxtRecord.MarkToAppendInAdditionalData();
+
+        if (hostEntry != nullptr)
+        {
+            hostEntry->mAddrRecord.MarkToAppendInAdditionalData();
         }
     }
 
